@@ -2463,6 +2463,7 @@ extern int nonseekable_open(struct inode * inode, struct file * filp);
 
 #ifdef CONFIG_FS_DAX
 int dax_clear_blocks(struct inode *, sector_t block, long size);
+int dax_zero_page_range(struct inode *, loff_t from, unsigned len, get_block_t);
 int dax_truncate_page(struct inode *, loff_t from, get_block_t);
 ssize_t dax_do_io(int rw, struct kiocb *, struct inode *, struct iov_iter *,
 		loff_t, get_block_t, dio_iodone_t, int flags);
@@ -2474,7 +2475,8 @@ static inline int dax_clear_blocks(struct inode *i, sector_t blk, long sz)
 	return 0;
 }
 
-static inline int dax_truncate_page(struct inode *i, loff_t frm, get_block_t gb)
+static inline int dax_zero_page_range(struct inode *inode, loff_t from,
+						unsigned len, get_block_t gb)
 {
 	return 0;
 }
@@ -2486,6 +2488,11 @@ static inline ssize_t dax_do_io(int rw, struct kiocb *iocb, struct inode *inode,
 	return -ENOTTY;
 }
 #endif
+
+/* Can't be a function because PAGE_CACHE_SIZE is defined in pagemap.h */
+#define dax_truncate_page(inode, from, get_block)	\
+	dax_zero_page_range(inode, from, PAGE_CACHE_SIZE, get_block)
+
 
 #ifdef CONFIG_BLOCK
 typedef void (dio_submit_t)(int rw, struct bio *bio, struct inode *inode,
