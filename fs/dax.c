@@ -460,6 +460,54 @@ int dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 EXPORT_SYMBOL_GPL(dax_fault);
 
 /**
+ * dax_zero_page_range - zero a range within a page of a DAX file
+ * @inode: The file being truncated
+ * @from: The file offset that is being truncated to
+ * @length: The number of bytes to zero
+ * @get_block: The filesystem method used to translate file offsets to blocks
+ *
+ * This function can be called by a filesystem when it is zeroing part of a
+ * page in a DAX file.  This is intended for hole-punch operations.  If
+ * you are truncating a file, the helper function dax_truncate_page() may be
+ * more convenient.
+ *
+ * We work in terms of PAGE_CACHE_SIZE here for commonality with
+ * block_truncate_page(), but we could go down to PAGE_SIZE if the filesystem
+ * took care of disposing of the unnecessary blocks.  Even if the filesystem
+ * block size is smaller than PAGE_SIZE, we have to zero the rest of the page
+ * since the file might be mmaped.
+ */
+int dax_zero_page_range(struct inode *inode, loff_t from, unsigned length,
+							get_block_t get_block)
+{
+	struct buffer_head bh;
+	pgoff_t index = from >> PAGE_CACHE_SHIFT;
+	unsigned offset = from & (PAGE_CACHE_SIZE-1);
+	int err;
+
+	/* Block boundary? Nothing to do */
+	if (!length)
+		return 0;
+	BUG_ON((offset + length) > PAGE_CACHE_SIZE);
+
+	memset(&bh, 0, sizeof(bh));
+	bh.b_size = PAGE_CACHE_SIZE;
+	err = get_block(inode, index, &bh, 0);
+	if (err < 0)
+		return err;
+	if (buffer_written(&bh)) {
+		void *addr;
+		err = dax_get_addr(&bh, &addr, inode->i_blkbits);
+		if (err < 0)
+			return err;
+		memset(addr + offset, 0, length);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dax_zero_page_range);
+
+/**
  * dax_truncate_page - handle a partial page being truncated in a DAX file
  * @inode: The file being truncated
  * @from: The file offset that is being truncated to
@@ -476,29 +524,7 @@ EXPORT_SYMBOL_GPL(dax_fault);
  */
 int dax_truncate_page(struct inode *inode, loff_t from, get_block_t get_block)
 {
-	struct buffer_head bh;
-	pgoff_t index = from >> PAGE_CACHE_SHIFT;
-	unsigned offset = from & (PAGE_CACHE_SIZE-1);
 	unsigned length = PAGE_CACHE_ALIGN(from) - from;
-	int err;
-
-	/* Block boundary? Nothing to do */
-	if (!length)
-		return 0;
-
-	memset(&bh, 0, sizeof(bh));
-	bh.b_size = PAGE_CACHE_SIZE;
-	err = get_block(inode, index, &bh, 0);
-	if (err < 0)
-		return err;
-	if (buffer_written(&bh)) {
-		void *addr;
-		err = dax_get_addr(&bh, &addr, inode->i_blkbits);
-		if (err < 0)
-			return err;
-		memset(addr + offset, 0, length);
-	}
-
-	return 0;
+	return dax_zero_page_range(inode, from, length, get_block);
 }
 EXPORT_SYMBOL_GPL(dax_truncate_page);
