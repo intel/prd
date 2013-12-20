@@ -49,6 +49,7 @@ struct swap_info_struct;
 struct seq_file;
 struct workqueue_struct;
 struct iov_iter;
+struct vm_fault;
 
 extern void __init inode_init(void);
 extern void __init inode_init_early(void);
@@ -2464,10 +2465,11 @@ extern int nonseekable_open(struct inode * inode, struct file * filp);
 
 #ifdef CONFIG_FS_XIP
 int dax_clear_blocks(struct inode *, sector_t block, long size);
-extern int xip_file_mmap(struct file * file, struct vm_area_struct * vma);
 extern int xip_truncate_page(struct address_space *mapping, loff_t from);
 ssize_t dax_do_io(int rw, struct kiocb *, struct inode *, struct iov_iter *,
 		loff_t, get_block_t, dio_iodone_t, int flags);
+int dax_fault(struct vm_area_struct *, struct vm_fault *, get_block_t);
+int dax_mkwrite(struct vm_area_struct *, struct vm_fault *, get_block_t);
 #else
 static inline int dax_clear_blocks(struct inode *i, sector_t blk, long sz)
 {

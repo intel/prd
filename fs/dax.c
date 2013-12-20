@@ -19,9 +19,13 @@
 #include <linux/buffer_head.h>
 #include <linux/fs.h>
 #include <linux/genhd.h>
+#include <linux/highmem.h>
+#include <linux/memcontrol.h>
+#include <linux/mm.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/uio.h>
+#include <linux/vmstat.h>
 
 int dax_clear_blocks(struct inode *inode, sector_t block, long size)
 {
@@ -62,6 +66,14 @@ static long dax_get_addr(struct buffer_head *bh, void **addr, unsigned blkbits)
 	unsigned long pfn;
 	sector_t sector = bh->b_blocknr << (blkbits - 9);
 	return bdev_direct_access(bh->b_bdev, sector, addr, &pfn, bh->b_size);
+}
+
+static long dax_get_pfn(struct buffer_head *bh, unsigned long *pfn,
+							unsigned blkbits)
+{
+	void *addr;
+	sector_t sector = bh->b_blocknr << (blkbits - 9);
+	return bdev_direct_access(bh->b_bdev, sector, &addr, pfn, bh->b_size);
 }
 
 static void dax_new_buf(void *addr, unsigned size, unsigned first, loff_t pos,
@@ -228,3 +240,212 @@ ssize_t dax_do_io(int rw, struct kiocb *iocb, struct inode *inode,
 	return retval;
 }
 EXPORT_SYMBOL_GPL(dax_do_io);
+
+/*
+ * The user has performed a load from a hole in the file.  Allocating
+ * a new page in the file would cause excessive storage usage for
+ * workloads with sparse files.  We allocate a page cache page instead.
+ * We'll kick it out of the page cache if it's ever written to,
+ * otherwise it will simply fall out of the page cache under memory
+ * pressure without ever having been dirtied.
+ */
+static int dax_load_hole(struct address_space *mapping, struct page *page,
+							struct vm_fault *vmf)
+{
+	unsigned long size;
+	struct inode *inode = mapping->host;
+	if (!page)
+		page = find_or_create_page(mapping, vmf->pgoff,
+						GFP_KERNEL | __GFP_ZERO);
+	if (!page)
+		return VM_FAULT_OOM;
+	/* Recheck i_size under page lock to avoid truncate race */
+	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (vmf->pgoff >= size) {
+		unlock_page(page);
+		page_cache_release(page);
+		return VM_FAULT_SIGBUS;
+	}
+
+	vmf->page = page;
+	return VM_FAULT_LOCKED;
+}
+
+static int copy_user_bh(struct page *to, struct buffer_head *bh,
+			unsigned blkbits, unsigned long vaddr)
+{
+	void *vfrom, *vto;
+	if (dax_get_addr(bh, &vfrom, blkbits) < 0)
+		return -EIO;
+	vto = kmap_atomic(to);
+	copy_user_page(vto, vfrom, vaddr, to);
+	kunmap_atomic(vto);
+	return 0;
+}
+
+static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
+			get_block_t get_block)
+{
+	struct file *file = vma->vm_file;
+	struct inode *inode = file_inode(file);
+	struct address_space *mapping = file->f_mapping;
+	struct page *page;
+	struct buffer_head bh;
+	unsigned long vaddr = (unsigned long)vmf->virtual_address;
+	unsigned blkbits = inode->i_blkbits;
+	sector_t block;
+	pgoff_t size;
+	unsigned long pfn;
+	int error;
+	int major = 0;
+
+	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (vmf->pgoff >= size)
+		return VM_FAULT_SIGBUS;
+
+	memset(&bh, 0, sizeof(bh));
+	block = (sector_t)vmf->pgoff << (PAGE_SHIFT - blkbits);
+	bh.b_size = PAGE_SIZE;
+
+ repeat:
+	page = find_get_page(mapping, vmf->pgoff);
+	if (page) {
+		if (!lock_page_or_retry(page, vma->vm_mm, vmf->flags)) {
+			page_cache_release(page);
+			return VM_FAULT_RETRY;
+		}
+		if (unlikely(page->mapping != mapping)) {
+			unlock_page(page);
+			page_cache_release(page);
+			goto repeat;
+		}
+	} else {
+		mutex_lock(&mapping->i_mmap_mutex);
+	}
+
+	/* Guard against a race with truncate */
+	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (unlikely(vmf->pgoff >= size))
+		goto sigbus;
+
+	error = get_block(inode, block, &bh, 0);
+	if (error || bh.b_size < PAGE_SIZE)
+		goto sigbus;
+
+	if (!buffer_written(&bh) && !vmf->cow_page) {
+		if (vmf->flags & FAULT_FLAG_WRITE) {
+			error = get_block(inode, block, &bh, 1);
+			count_vm_event(PGMAJFAULT);
+			mem_cgroup_count_vm_event(vma->vm_mm, PGMAJFAULT);
+			major = VM_FAULT_MAJOR;
+			if (error || bh.b_size < PAGE_SIZE)
+				goto sigbus;
+		} else {
+			mutex_unlock(&mapping->i_mmap_mutex);
+			return dax_load_hole(mapping, page, vmf);
+		}
+	}
+
+	if (vmf->cow_page) {
+		struct page *new_page = vmf->cow_page;
+		if (buffer_written(&bh))
+			error = copy_user_bh(new_page, &bh, blkbits, vaddr);
+		else
+			clear_user_highpage(new_page, vaddr);
+		if (!error) {
+			__SetPageUptodate(new_page);
+			vm_insert_page(vma, vaddr, new_page);
+		}
+		if (page) {
+			unlock_page(page);
+			page_cache_release(page);
+		} else {
+			mutex_unlock(&mapping->i_mmap_mutex);
+		}
+		return error ? VM_FAULT_SIGBUS : VM_FAULT_NOPAGE;
+	}
+
+	if (buffer_unwritten(&bh) || buffer_new(&bh))
+		dax_clear_blocks(inode, bh.b_blocknr, bh.b_size);
+
+	error = dax_get_pfn(&bh, &pfn, blkbits);
+	if (error > 0)
+		error = vm_replace_mixed(vma, vaddr, pfn);
+
+	if (!page) {
+		mutex_unlock(&mapping->i_mmap_mutex);
+		/*
+		 * We may have raced with another thread which has inserted
+		 * a zero page at this address.  Remove it now if we did.
+		 */
+		page = find_lock_page(mapping, vmf->pgoff);
+	}
+
+	if (page) {
+		delete_from_page_cache(page);
+		unmap_mapping_range(mapping, vmf->pgoff << PAGE_SHIFT,
+							PAGE_CACHE_SIZE, 0);
+		unlock_page(page);
+		page_cache_release(page);
+	}
+
+	if (error == -ENOMEM)
+		return VM_FAULT_OOM;
+	/* -EBUSY is fine, somebody else faulted on the same PTE */
+	if (error != -EBUSY)
+		BUG_ON(error);
+	return VM_FAULT_NOPAGE | major;
+
+ sigbus:
+	if (page) {
+		unlock_page(page);
+		page_cache_release(page);
+	} else {
+		mutex_unlock(&mapping->i_mmap_mutex);
+	}
+	return VM_FAULT_SIGBUS;
+}
+
+/**
+ * dax_fault - handle a page fault on a DAX file
+ * @vma: The virtual memory area where the fault occurred
+ * @vmf: The description of the fault
+ * @get_block: The filesystem method used to translate file offsets to blocks
+ *
+ * When a page fault occurs, filesystems may call this helper in their
+ * fault handler for DAX files.
+ */
+int dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
+			get_block_t get_block)
+{
+	int result;
+	struct super_block *sb = file_inode(vma->vm_file)->i_sb;
+
+	if (vmf->flags & FAULT_FLAG_WRITE) {
+		sb_start_pagefault(sb);
+		file_update_time(vma->vm_file);
+	}
+	result = do_dax_fault(vma, vmf, get_block);
+	if (vmf->flags & FAULT_FLAG_WRITE)
+		sb_end_pagefault(sb);
+
+	return result;
+}
+EXPORT_SYMBOL_GPL(dax_fault);
+
+/**
+ * dax_mkwrite - convert a read-only page to read-write in a DAX file
+ * @vma: The virtual memory area where the fault occurred
+ * @vmf: The description of the fault
+ * @get_block: The filesystem method used to translate file offsets to blocks
+ *
+ * DAX handles reads of holes by adding pages full of zeroes into the
+ * mapping.  If the page is subsequenty written to, we have to allocate
+ * the page on media and free the page that was in the cache.
+ */
+int dax_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf,
+			get_block_t get_block)
+{
+	return dax_fault(vma, vmf, get_block);
+}
+EXPORT_SYMBOL_GPL(dax_mkwrite);
