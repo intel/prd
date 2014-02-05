@@ -393,6 +393,32 @@ config BLK_DEV_RAM_SIZE
 	  The default value is 4096 kilobytes. Only change this if you know
 	  what you are doing.
 
+config BLK_DEV_PMEM
+	tristate "Persistent memory block device support"
+	---help---
+	 TBD...
+
+config BLK_DEV_PMEM_START
+	int "Offset in GB of where to start claiming space"
+	default "0"
+	depends on BLK_DEV_PMEM
+	help
+	  TBD...
+
+config BLK_DEV_PMEM_COUNT
+	int "Default number of PMEM disks"
+	default "4"
+	depends on BLK_DEV_PMEM
+	help
+	  TBD...
+
+config BLK_DEV_PMEM_SIZE
+	int "Size in GB of space to claim"
+	depends on BLK_DEV_PMEM
+	default "0"
+	help
+	 TBD...
+
 config BLK_DEV_XIP
 	bool "Support XIP filesystems on RAM block device"
 	depends on BLK_DEV_RAM
