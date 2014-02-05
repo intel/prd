@@ -404,6 +404,47 @@ config BLK_DEV_RAM_DAX
 	  and will prevent RAM block device backing store memory from being
 	  allocated from highmem (only a problem for highmem systems).
 
+config BLK_DEV_PMEM
+	tristate "Persistent memory block device support"
+	default m
+	---help---
+	  Saying Y here will allow you to use a block of reserved memory as one
+	  or more block devices.  You can make file systems on it, read and
+	  write to it and do all the other things that you can do with normal
+	  block devices (such as hard drives).  Memory for PRD should be
+	  reserved using the "memmap" kernel parameter.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called prd.
+
+	  Most normal users won't need this functionality, and can thus say N
+	  here.
+
+config BLK_DEV_PMEM_START
+	int "Offset in GB of where to start claiming space"
+	default "0"
+	depends on BLK_DEV_PMEM
+	help
+	  Starting offset in GB that PRD should use when claiming memory.  Note
+	  that this memory needs to be reserved from the OS at boot time using
+	  the "memmap" kernel parameter.
+
+config BLK_DEV_PMEM_COUNT
+	int "Default number of PMEM disks"
+	default "4"
+	depends on BLK_DEV_PMEM
+	help
+	  Number of equal sized block devices that PRD should create.
+
+config BLK_DEV_PMEM_SIZE
+	int "Size in GB of space to claim"
+	depends on BLK_DEV_PMEM
+	default "0"
+	help
+	  Amount of memory in GB that PRD should use when creating block
+	  devices.  Note that this memory needs to be reserved from the OS at
+	  boot time using the "memmap" kernel parameter.
+
 config CDROM_PKTCDVD
 	tristate "Packet writing on CD/DVD media"
 	depends on !UML
