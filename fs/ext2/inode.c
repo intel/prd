@@ -858,7 +858,11 @@ ext2_direct_IO(int rw, struct kiocb *iocb, const struct iovec *iov,
 	struct inode *inode = mapping->host;
 	ssize_t ret;
 
-	ret = blockdev_direct_IO(rw, iocb, inode, iov, offset, nr_segs,
+	if (IS_DAX(inode))
+		ret = dax_do_io(rw, iocb, inode, iov, offset, nr_segs,
+				ext2_get_block, NULL, DIO_LOCKING);
+	else
+		ret = blockdev_direct_IO(rw, iocb, inode, iov, offset, nr_segs,
 				 ext2_get_block);
 	if (ret < 0 && (rw & WRITE))
 		ext2_write_failed(mapping, offset + iov_length(iov, nr_segs));
@@ -888,6 +892,7 @@ const struct address_space_operations ext2_aops = {
 const struct address_space_operations ext2_aops_xip = {
 	.bmap			= ext2_bmap,
 	.get_xip_mem		= ext2_get_xip_mem,
+	.direct_IO		= ext2_direct_IO,
 };
 
 const struct address_space_operations ext2_nobh_aops = {
