@@ -1476,7 +1476,7 @@ pte_t *__get_locked_pte(struct mm_struct *mm, unsigned long addr,
  * pages reserved for the old functions anyway.
  */
 static int insert_page(struct vm_area_struct *vma, unsigned long addr,
-			struct page *page, pgprot_t prot)
+			struct page *page, pgprot_t prot, bool replace)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	int retval;
@@ -1492,8 +1492,12 @@ static int insert_page(struct vm_area_struct *vma, unsigned long addr,
 	if (!pte)
 		goto out;
 	retval = -EBUSY;
-	if (!pte_none(*pte))
-		goto out_unlock;
+	if (!pte_none(*pte)) {
+		if (!replace)
+			goto out_unlock;
+		VM_BUG_ON(!mutex_is_locked(&vma->vm_file->f_mapping->i_mmap_mutex));
+		zap_page_range_single(vma, addr, PAGE_SIZE, NULL);
+	}
 
 	/* Ok, finally just insert the thing.. */
 	get_page(page);
@@ -1549,12 +1553,12 @@ int vm_insert_page(struct vm_area_struct *vma, unsigned long addr,
 		BUG_ON(vma->vm_flags & VM_PFNMAP);
 		vma->vm_flags |= VM_MIXEDMAP;
 	}
-	return insert_page(vma, addr, page, vma->vm_page_prot);
+	return insert_page(vma, addr, page, vma->vm_page_prot, false);
 }
 EXPORT_SYMBOL(vm_insert_page);
 
 static int insert_pfn(struct vm_area_struct *vma, unsigned long addr,
-			unsigned long pfn, pgprot_t prot)
+			unsigned long pfn, pgprot_t prot, bool replace)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	int retval;
@@ -1566,8 +1570,12 @@ static int insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 	if (!pte)
 		goto out;
 	retval = -EBUSY;
-	if (!pte_none(*pte))
-		goto out_unlock;
+	if (!pte_none(*pte)) {
+		if (!replace)
+			goto out_unlock;
+		VM_BUG_ON(!mutex_is_locked(&vma->vm_file->f_mapping->i_mmap_mutex));
+		zap_page_range_single(vma, addr, PAGE_SIZE, NULL);
+	}
 
 	/* Ok, finally just insert the thing.. */
 	entry = pte_mkspecial(pfn_pte(pfn, prot));
@@ -1620,14 +1628,14 @@ int vm_insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 	if (track_pfn_insert(vma, &pgprot, pfn))
 		return -EINVAL;
 
-	ret = insert_pfn(vma, addr, pfn, pgprot);
+	ret = insert_pfn(vma, addr, pfn, pgprot, false);
 
 	return ret;
 }
 EXPORT_SYMBOL(vm_insert_pfn);
 
-int vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
-			unsigned long pfn)
+int __vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
+			unsigned long pfn, bool replace)
 {
 	BUG_ON(!(vma->vm_flags & VM_MIXEDMAP));
 
@@ -1645,11 +1653,11 @@ int vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
 		struct page *page;
 
 		page = pfn_to_page(pfn);
-		return insert_page(vma, addr, page, vma->vm_page_prot);
+		return insert_page(vma, addr, page, vma->vm_page_prot, replace);
 	}
-	return insert_pfn(vma, addr, pfn, vma->vm_page_prot);
+	return insert_pfn(vma, addr, pfn, vma->vm_page_prot, replace);
 }
-EXPORT_SYMBOL(vm_insert_mixed);
+EXPORT_SYMBOL(__vm_insert_mixed);
 
 /*
  * maps a range of physical memory into the requested pages. the old

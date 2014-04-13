@@ -1958,8 +1958,12 @@ int remap_pfn_range(struct vm_area_struct *, unsigned long addr,
 int vm_insert_page(struct vm_area_struct *, unsigned long addr, struct page *);
 int vm_insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 			unsigned long pfn);
-int vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
-			unsigned long pfn);
+int __vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
+			unsigned long pfn, bool replace);
+#define vm_insert_mixed(vma, addr, pfn)	\
+	__vm_insert_mixed(vma, addr, pfn, false)
+#define vm_replace_mixed(vma, addr, pfn)	\
+	__vm_insert_mixed(vma, addr, pfn, true)
 int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len);
 
 
