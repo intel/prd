@@ -362,10 +362,6 @@ static int __init prd_init(void)
 	phys_addr  = (phys_addr_t) prd_start_gb * 1024 * 1024 * 1024;
 	total_size = (size_t)	   prd_size_gb  * 1024 * 1024 * 1024;
 
-	if ((1UL << part_shift) > DISK_MAX_PARTS ||
-	    (1UL << (MINORBITS - part_shift)) < prd_count)
-		return -EINVAL;
-
 	res_mem = request_mem_region_exclusive(phys_addr, total_size, "prd");
 	if (!res_mem)
 		return -ENOMEM;
@@ -392,12 +388,19 @@ static int __init prd_init(void)
 		max_part = (1UL << part_shift) - 1;
 	}
 
+	if ((1UL << part_shift) > DISK_MAX_PARTS ||
+	    prd_count > 1UL << (MINORBITS - part_shift)) {
+		result = -EINVAL;
+		goto out_unmap;
+	}
+
 	range = prd_count << part_shift;
 
 	result = register_blkdev(prd_major, "prd");
-	if (result < 0)
+	if (result < 0) {
+		result = -EIO;
 		goto out_unmap;
-	else if (result > 0)
+	} else if (result > 0)
 		prd_major = result;
 
 	for (i = 0; i < prd_count; i++) {
@@ -408,6 +411,8 @@ static int __init prd_init(void)
 		}
 		list_add_tail(&prd->prd_list, &prd_devices);
 	}
+
+	/* point of no return */
 
 	list_for_each_entry(prd, &prd_devices, prd_list)
 		add_disk(prd->prd_disk);
