@@ -394,7 +394,8 @@ static int __init prd_init(void)
 		goto out_unmap;
 	}
 
-	range = prd_count << part_shift;
+	/* FIXME: this is just a workaround for [bp]rd_probe being broken */
+	range = 1UL << MINORBITS;
 
 	result = register_blkdev(prd_major, "prd");
 	if (result < 0) {
