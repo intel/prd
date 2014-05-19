@@ -256,7 +256,7 @@ static int prd_count = CONFIG_BLK_DEV_PMEM_COUNT;
 module_param(prd_count, int, S_IRUGO);
 MODULE_PARM_DESC(prd_count, "Number of prd devices to evenly split allocated space");
 
-static int max_part;
+static int max_part = 15;
 module_param(max_part, int, S_IRUGO);
 MODULE_PARM_DESC(max_part, "Maximum number of partitions per PRAM disk");
 
@@ -303,7 +303,6 @@ static struct prd_device *prd_alloc(int i)
 	disk->fops		= &prd_fops;
 	disk->private_data	= prd;
 	disk->queue		= prd->prd_queue;
-	disk->flags |= GENHD_FL_SUPPRESS_PARTITION_INFO;
 	sprintf(disk->disk_name, "pmem%d", i);
 	set_capacity(disk, disk_sectors);
 
