@@ -19,6 +19,7 @@
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/fs.h>
+#include <linux/hdreg.h>
 #include <linux/highmem.h>
 #include <linux/init.h>
 #include <linux/major.h>
@@ -51,6 +52,15 @@ struct prd_device {
 	void			*virt_addr;
 	size_t			size;
 };
+
+static int prd_getgeo(struct block_device *bd, struct hd_geometry *geo)
+{
+	/* some standard values */
+	geo->heads = 1 << 6;
+	geo->sectors = 1 << 5;
+	geo->cylinders = get_capacity(bd->bd_disk) >> 11;
+	return 0;
+}
 
 /*
  * direct translation from (prd,sector) => void*
@@ -226,6 +236,7 @@ static long prd_direct_access(struct block_device *bdev, sector_t sector,
 static const struct block_device_operations prd_fops = {
 	.owner =		THIS_MODULE,
 	.direct_access =	prd_direct_access,
+	.getgeo =		prd_getgeo,
 };
 
 /* Kernel module stuff */
