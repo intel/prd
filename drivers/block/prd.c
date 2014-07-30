@@ -84,28 +84,6 @@ static unsigned long prd_lookup_pfn(struct prd_device *prd, sector_t sector)
 	return (prd->phys_addr >> PAGE_SHIFT) + page_offset;
 }
 
-/* sector must be page aligned */
-static void prd_zero_page(struct prd_device *prd, sector_t sector)
-{
-	void *page_addr = prd_lookup_pg_addr(prd, sector);
-	BUG_ON(sector & (PAGE_SECTORS - 1));
-	memset(page_addr, 0, PAGE_SIZE);
-}
-
-/* sector must be page aligned and n must be a multiple of PAGE_SIZE */
-static void discard_from_prd(struct prd_device *prd,
-			sector_t sector, size_t n)
-{
-	BUG_ON(sector & (PAGE_SECTORS - 1));
-	BUG_ON(n      & (PAGE_SIZE    - 1));
-
-	while (n >= PAGE_SIZE) {
-		prd_zero_page(prd, sector);
-		sector += PAGE_SIZE >> SECTOR_SHIFT;
-		n -= PAGE_SIZE;
-	}
-}
-
 /*
  * sector is not required to be page aligned.
  * n is at most a single page, but could be less.
@@ -192,10 +170,7 @@ static void prd_make_request(struct request_queue *q, struct bio *bio)
 		goto out;
 	}
 
-	if (unlikely(bio->bi_rw & REQ_DISCARD)) {
-		discard_from_prd(prd, sector, bio->bi_iter.bi_size);
-		goto out;
-	}
+	BUG_ON(bio->bi_rw & REQ_DISCARD);
 
 	rw = bio_rw(bio);
 	if (rw == READA)
@@ -289,11 +264,6 @@ static struct prd_device *prd_alloc(int i)
 	blk_queue_make_request(prd->prd_queue, prd_make_request);
 	blk_queue_max_hw_sectors(prd->prd_queue, 1024);
 	blk_queue_bounce_limit(prd->prd_queue, BLK_BOUNCE_ANY);
-
-	prd->prd_queue->limits.discard_granularity = PAGE_SIZE;
-	prd->prd_queue->limits.max_discard_sectors = UINT_MAX;
-	prd->prd_queue->limits.discard_zeroes_data = 1;
-	queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, prd->prd_queue);
 
 	disk = prd->prd_disk = alloc_disk(1 << part_shift);
 	if (!disk)
