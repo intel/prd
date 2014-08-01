@@ -231,12 +231,6 @@ static int prd_count = CONFIG_BLK_DEV_PMEM_COUNT;
 module_param(prd_count, int, S_IRUGO);
 MODULE_PARM_DESC(prd_count, "Number of prd devices to evenly split allocated space");
 
-static int max_part = 15;
-module_param(max_part, int, S_IRUGO);
-MODULE_PARM_DESC(max_part, "Maximum number of partitions per PRAM disk");
-
-static int part_shift;
-
 static LIST_HEAD(prd_devices);
 static DEFINE_MUTEX(prd_devices_mutex);
 
@@ -265,14 +259,15 @@ static struct prd_device *prd_alloc(int i)
 	blk_queue_max_hw_sectors(prd->prd_queue, 1024);
 	blk_queue_bounce_limit(prd->prd_queue, BLK_BOUNCE_ANY);
 
-	disk = prd->prd_disk = alloc_disk(1 << part_shift);
+	disk = prd->prd_disk = alloc_disk(0);
 	if (!disk)
 		goto out_free_queue;
 	disk->major		= prd_major;
-	disk->first_minor	= i << part_shift;
+	disk->first_minor	= 0;
 	disk->fops		= &prd_fops;
 	disk->private_data	= prd;
 	disk->queue		= prd->prd_queue;
+	disk->flags		= GENHD_FL_EXT_DEVT;
 	sprintf(disk->disk_name, "pmem%d", i);
 	set_capacity(disk, disk_sectors);
 
@@ -324,11 +319,10 @@ static struct kobject *prd_probe(dev_t dev, int *part, void *data)
 	struct kobject *kobj;
 
 	mutex_lock(&prd_devices_mutex);
-	prd = prd_init_one(MINOR(dev) >> part_shift);
+	prd = prd_init_one(MINOR(dev));
 	kobj = prd ? get_disk(prd->prd_disk) : NULL;
 	mutex_unlock(&prd_devices_mutex);
 
-	*part = 0;
 	return kobj;
 }
 
@@ -336,7 +330,6 @@ static int __init prd_init(void)
 {
 	int result, i;
 	struct resource *res_mem;
-	unsigned long range;
 	struct prd_device *prd, *next;
 
 	phys_addr  = (phys_addr_t) prd_start_gb * 1024 * 1024 * 1024;
@@ -352,30 +345,6 @@ static int __init prd_init(void)
 		result = -ENOMEM;
 		goto out_release;
 	}
-
-	part_shift = 0;
-	if (max_part > 0) {
-		part_shift = fls(max_part);
-
-		/*
-		 * Adjust max_part according to part_shift as it is exported
-		 * to user space so that user can decide correct minor number
-		 * if [s]he want to create more devices.
-		 *
-		 * Note that -1 is required because partition 0 is reserved
-		 * for the whole disk.
-		 */
-		max_part = (1UL << part_shift) - 1;
-	}
-
-	if ((1UL << part_shift) > DISK_MAX_PARTS ||
-	    prd_count > 1UL << (MINORBITS - part_shift)) {
-		result = -EINVAL;
-		goto out_unmap;
-	}
-
-	/* FIXME: this is just a workaround for [bp]rd_probe being broken */
-	range = 1UL << MINORBITS;
 
 	result = register_blkdev(prd_major, "prd");
 	if (result < 0) {
@@ -398,7 +367,7 @@ static int __init prd_init(void)
 	list_for_each_entry(prd, &prd_devices, prd_list)
 		add_disk(prd->prd_disk);
 
-	blk_register_region(MKDEV(prd_major, 0), range,
+	blk_register_region(MKDEV(prd_major, 0), 0,
 				  THIS_MODULE, prd_probe, NULL, NULL);
 
 	pr_info("prd: module loaded\n");
@@ -421,12 +390,9 @@ out_release:
 
 static void __exit prd_exit(void)
 {
-	unsigned long range;
 	struct prd_device *prd, *next;
 
-	range = prd_count << part_shift;
-
-	blk_unregister_region(MKDEV(prd_major, 0), range);
+	blk_unregister_region(MKDEV(prd_major, 0), 0);
 
 	list_for_each_entry_safe(prd, next, &prd_devices, prd_list)
 		prd_del_one(prd);
