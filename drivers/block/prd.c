@@ -205,7 +205,6 @@ static int prd_rw_page(struct block_device *bdev, sector_t sector,
 	return 0;
 }
 
-/* sector must be page aligned and size must be a multiple of PAGE_SIZE */
 static long prd_direct_access(struct block_device *bdev, sector_t sector,
 			      void **kaddr, unsigned long *pfn, long size)
 {
@@ -213,11 +212,6 @@ static long prd_direct_access(struct block_device *bdev, sector_t sector,
 
 	if (!prd)
 		return -ENODEV;
-	if (sector & (PAGE_SECTORS - 1) ||
-	    size   & (PAGE_SIZE    - 1))
-		return -EINVAL;
-	if (sector + (size >> SECTOR_SHIFT) > get_capacity(bdev->bd_disk))
-		return -ERANGE;
 
 	*kaddr = prd_lookup_pg_addr(prd, sector);
 	*pfn = prd_lookup_pfn(prd, sector);
