@@ -195,6 +195,16 @@ out:
 	bio_endio(bio, err);
 }
 
+static int prd_rw_page(struct block_device *bdev, sector_t sector,
+		       struct page *page, int rw)
+{
+	struct prd_device *prd = bdev->bd_disk->private_data;
+
+	prd_do_bvec(prd, page, PAGE_CACHE_SIZE, 0, rw, sector);
+	page_endio(page, rw & WRITE, 0);
+	return 0;
+}
+
 /* sector must be page aligned and size must be a multiple of PAGE_SIZE */
 static long prd_direct_access(struct block_device *bdev, sector_t sector,
 			      void **kaddr, unsigned long *pfn, long size)
@@ -217,6 +227,7 @@ static long prd_direct_access(struct block_device *bdev, sector_t sector,
 
 static const struct block_device_operations prd_fops = {
 	.owner =		THIS_MODULE,
+	.rw_page =		prd_rw_page,
 	.direct_access =	prd_direct_access,
 	.getgeo =		prd_getgeo,
 };
