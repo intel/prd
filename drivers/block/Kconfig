@@ -407,11 +407,9 @@ config BLK_DEV_RAM_DAX
 config BLK_DEV_PMEM
 	tristate "Persistent memory block device support"
 	default m
-	---help---
-	  Saying Y here will allow you to use a block of reserved memory as one
-	  or more block devices.  You can make file systems on it, read and
-	  write to it and do all the other things that you can do with normal
-	  block devices (such as hard drives).  Memory for PRD should be
+	help
+	  Saying Y here will allow you to use a contiguous range of reserved
+	  memory as one or more block devices.  Memory for PRD should be
 	  reserved using the "memmap" kernel parameter.
 
 	  To compile this driver as a module, choose M here: the module will be
@@ -421,13 +419,16 @@ config BLK_DEV_PMEM
 	  here.
 
 config BLK_DEV_PMEM_START
-	int "Offset in GB of where to start claiming space"
+	int "Offset in GiB of where to start claiming space"
 	default "0"
 	depends on BLK_DEV_PMEM
 	help
-	  Starting offset in GB that PRD should use when claiming memory.  Note
-	  that this memory needs to be reserved from the OS at boot time using
-	  the "memmap" kernel parameter.
+	  Starting offset in GiB that PRD should use when claiming memory.  This
+	  memory needs to be reserved from the OS at boot time using the
+	  "memmap" kernel parameter.
+
+	  If you provide PRD with volatile memory it will act as a volatile
+	  RAM disk and your data will not be persistent.
 
 config BLK_DEV_PMEM_COUNT
 	int "Default number of PMEM disks"
@@ -437,12 +438,12 @@ config BLK_DEV_PMEM_COUNT
 	  Number of equal sized block devices that PRD should create.
 
 config BLK_DEV_PMEM_SIZE
-	int "Size in GB of space to claim"
+	int "Size in GiB of space to claim"
 	depends on BLK_DEV_PMEM
 	default "0"
 	help
-	  Amount of memory in GB that PRD should use when creating block
-	  devices.  Note that this memory needs to be reserved from the OS at
+	  Amount of memory in GiB that PRD should use when creating block
+	  devices.  This memory needs to be reserved from the OS at
 	  boot time using the "memmap" kernel parameter.
 
 config CDROM_PKTCDVD
