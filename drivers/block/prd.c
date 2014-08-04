@@ -11,7 +11,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
  *
- * This driver is heavily based on block/brd.c.
+ * This driver is heavily based on drivers/block/brd.c.
  * Copyright (C) 2007 Nick Piggin
  * Copyright (C) 2007 Novell Inc.
  */
@@ -72,6 +72,7 @@ static void *prd_lookup_pg_addr(struct prd_device *prd, sector_t sector)
 {
 	size_t page_offset = sector >> PAGE_SECTORS_SHIFT;
 	size_t offset = page_offset << PAGE_SHIFT;
+
 	BUG_ON(offset >= prd->size);
 	return prd->virt_addr + offset;
 }
@@ -80,6 +81,7 @@ static void *prd_lookup_pg_addr(struct prd_device *prd, sector_t sector)
 static unsigned long prd_lookup_pfn(struct prd_device *prd, sector_t sector)
 {
 	size_t page_offset = sector >> PAGE_SECTORS_SHIFT;
+
 	BUG_ON(sector & (PAGE_SECTORS - 1));
 	return (prd->phys_addr >> PAGE_SHIFT) + page_offset;
 }
@@ -147,6 +149,10 @@ static void prd_do_bvec(struct prd_device *prd, struct page *page,
 		copy_from_prd(mem + off, prd, sector, len);
 		flush_dcache_page(page);
 	} else {
+		/*
+		 * FIXME: Need more involved flushing to ensure that writes to
+		 * NVDIMMs are actually durable before returning.
+		 */
 		flush_dcache_page(page);
 		copy_to_prd(prd, mem + off, sector, len);
 	}
@@ -178,6 +184,7 @@ static void prd_make_request(struct request_queue *q, struct bio *bio)
 
 	bio_for_each_segment(bvec, bio, iter) {
 		unsigned int len = bvec.bv_len;
+
 		BUG_ON(len > PAGE_SIZE);
 		prd_do_bvec(prd, bvec.bv_page, len,
 			    bvec.bv_offset, rw, sector);
@@ -361,8 +368,6 @@ static int __init prd_init(void)
 		}
 		list_add_tail(&prd->prd_list, &prd_devices);
 	}
-
-	/* point of no return */
 
 	list_for_each_entry(prd, &prd_devices, prd_list)
 		add_disk(prd->prd_disk);
