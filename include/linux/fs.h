@@ -2481,8 +2481,8 @@ static inline int dax_zero_page_range(struct inode *inode, loff_t from,
 	return 0;
 }
 
-static inline ssize_t dax_do_io(int rw, struct kiocb *iocb, struct inode *inode,
-		const struct iovec *iov, loff_t pos, unsigned nr_segs,
+static inline ssize_t dax_do_io(int rw, struct kiocb *iocb,
+		struct inode *inode, struct iov_iter *iter, loff_t pos,
 		get_block_t get_block, dio_iodone_t end_io, int flags)
 {
 	return -ENOTTY;
