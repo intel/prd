@@ -74,6 +74,15 @@ static void *pmem_lookup_pg_addr(struct pmem_device *pmem, sector_t sector)
 	return pmem->virt_addr + offset;
 }
 
+/* sector must be page aligned */
+static unsigned long pmem_lookup_pfn(struct pmem_device *pmem, sector_t sector)
+{
+	size_t page_offset = sector >> PAGE_SECTORS_SHIFT;
+
+	BUG_ON(sector & (PAGE_SECTORS - 1));
+	return (pmem->phys_addr >> PAGE_SHIFT) + page_offset;
+}
+
 /*
  * sector is not required to be page aligned.
  * n is at most a single page, but could be less.
@@ -193,9 +202,24 @@ static int pmem_rw_page(struct block_device *bdev, sector_t sector,
 	return 0;
 }
 
+static long pmem_direct_access(struct block_device *bdev, sector_t sector,
+			      void **kaddr, unsigned long *pfn, long size)
+{
+	struct pmem_device *pmem = bdev->bd_disk->private_data;
+
+	if (!pmem)
+		return -ENODEV;
+
+	*kaddr = pmem_lookup_pg_addr(pmem, sector);
+	*pfn = pmem_lookup_pfn(pmem, sector);
+
+	return pmem->size - (sector * 512);
+}
+
 static const struct block_device_operations pmem_fops = {
 	.owner =		THIS_MODULE,
 	.rw_page =		pmem_rw_page,
+	.direct_access =	pmem_direct_access,
 	.getgeo =		pmem_getgeo,
 };
 
