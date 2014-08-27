@@ -50,6 +50,15 @@ struct pmem_device {
 	size_t			size;
 };
 
+static int pmem_getgeo(struct block_device *bd, struct hd_geometry *geo)
+{
+	/* some standard values */
+	geo->heads = 1 << 6;
+	geo->sectors = 1 << 5;
+	geo->cylinders = get_capacity(bd->bd_disk) >> 11;
+	return 0;
+}
+
 /*
  * direct translation from (pmem,sector) => void*
  * We do not require that sector be page aligned.
@@ -176,6 +185,7 @@ out:
 
 static const struct block_device_operations pmem_fops = {
 	.owner =		THIS_MODULE,
+	.getgeo =		pmem_getgeo,
 };
 
 /* Kernel module stuff */
