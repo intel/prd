@@ -327,7 +327,7 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 	if (error)
 		goto unlock_page;
 
-	if (!buffer_written(&bh) && !vmf->cow_page) {
+	if (!buffer_mapped(&bh) && !vmf->cow_page) {
 		if (vmf->flags & FAULT_FLAG_WRITE) {
 			error = get_block(inode, block, &bh, 1);
 			count_vm_event(PGMAJFAULT);
@@ -364,8 +364,13 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 		return VM_FAULT_LOCKED;
 	}
 
-	if (buffer_unwritten(&bh) || buffer_new(&bh))
-		dax_clear_blocks(inode, bh.b_blocknr, bh.b_size);
+	if (buffer_unwritten(&bh) || buffer_new(&bh)) {
+		error = dax_clear_blocks(inode, bh.b_blocknr, bh.b_size);
+		if (error)
+			goto out;
+		if (bh.b_end_io)
+			bh.b_end_io(&bh, 1);
+	}
 
 	/* Check we didn't race with a read fault installing a new page */
 	if (!page && major)
