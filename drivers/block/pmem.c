@@ -16,17 +16,15 @@
  * Copyright (C) 2007 Novell Inc.
  */
 
+#include <asm/cacheflush.h>
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/fs.h>
 #include <linux/hdreg.h>
-#include <linux/highmem.h>
 #include <linux/init.h>
-#include <linux/major.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
-#include <linux/uaccess.h>
 
 #define SECTOR_SHIFT		9
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
