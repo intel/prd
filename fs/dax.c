@@ -68,14 +68,6 @@ static long dax_get_addr(struct buffer_head *bh, void **addr, unsigned blkbits)
 	return bdev_direct_access(bh->b_bdev, sector, addr, &pfn, bh->b_size);
 }
 
-static long dax_get_pfn(struct buffer_head *bh, unsigned long *pfn,
-							unsigned blkbits)
-{
-	void *addr;
-	sector_t sector = bh->b_blocknr << (blkbits - 9);
-	return bdev_direct_access(bh->b_bdev, sector, &addr, pfn, bh->b_size);
-}
-
 static void dax_new_buf(void *addr, unsigned size, unsigned first, loff_t pos,
 			loff_t end)
 {
@@ -283,6 +275,54 @@ static int copy_user_bh(struct page *to, struct buffer_head *bh,
 	return 0;
 }
 
+static int dax_insert_mapping(struct inode *inode, struct buffer_head *bh,
+			struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	struct address_space *mapping = inode->i_mapping;
+	sector_t sector = bh->b_blocknr << (inode->i_blkbits - 9);
+	unsigned long vaddr = (unsigned long)vmf->virtual_address;
+	void *addr;
+	unsigned long pfn;
+	pgoff_t size;
+	int error;
+
+	mutex_lock(&mapping->i_mmap_mutex);
+
+	/*
+	 * Check truncate didn't happen while we were allocating a block.
+	 * If it did, this block may or may not be still allocated to the
+	 * file.  We can't tell the filesystem to free it because we can't
+	 * take i_mutex here.  In the worst case, the file still has blocks
+	 * allocated past the end of the file.
+	 */
+	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (unlikely(vmf->pgoff >= size)) {
+		error = -EIO;
+		goto out;
+	}
+
+	error = bdev_direct_access(bh->b_bdev, sector, &addr, &pfn, bh->b_size);
+	if (error < 0)
+		goto out;
+	if (error < PAGE_SIZE) {
+		error = -EIO;
+		goto out;
+	}
+
+	if (buffer_unwritten(bh) || buffer_new(bh)) {
+		clear_page(addr);
+		if (bh->b_end_io)
+			bh->b_end_io(bh, 1);
+	}
+
+	error = vm_insert_mixed(vma, vaddr, pfn);
+
+ out:
+	mutex_unlock(&mapping->i_mmap_mutex);
+
+	return error;
+}
+
 static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 			get_block_t get_block)
 {
@@ -295,7 +335,6 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 	unsigned blkbits = inode->i_blkbits;
 	sector_t block;
 	pgoff_t size;
-	unsigned long pfn;
 	int error;
 	int major = 0;
 
@@ -327,7 +366,7 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 	if (error)
 		goto unlock_page;
 
-	if (!buffer_written(&bh) && !vmf->cow_page) {
+	if (!buffer_mapped(&bh) && !vmf->cow_page) {
 		if (vmf->flags & FAULT_FLAG_WRITE) {
 			error = get_block(inode, block, &bh, 1);
 			count_vm_event(PGMAJFAULT);
@@ -357,15 +396,13 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 			size = (i_size_read(inode) + PAGE_SIZE - 1) >>
 								PAGE_SHIFT;
 			if (vmf->pgoff >= size) {
+				mutex_unlock(&mapping->i_mmap_mutex);
 				error = -EIO;
 				goto out;
 			}
 		}
 		return VM_FAULT_LOCKED;
 	}
-
-	if (buffer_unwritten(&bh) || buffer_new(&bh))
-		dax_clear_blocks(inode, bh.b_blocknr, bh.b_size);
 
 	/* Check we didn't race with a read fault installing a new page */
 	if (!page && major)
@@ -379,27 +416,7 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 		page_cache_release(page);
 	}
 
-	mutex_lock(&mapping->i_mmap_mutex);
-
-	/*
-	 * Check truncate didn't happen while we were allocating a block.
-	 * If it did, this block may or may not be still allocated to the
-	 * file.  We can't tell the filesystem to free it because we can't
-	 * take i_mutex here.  In the worst case, the file still has blocks
-	 * allocated past the end of the file.
-	 */
-	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	if (unlikely(vmf->pgoff >= size)) {
-		mutex_unlock(&mapping->i_mmap_mutex);
-		error = -EIO;
-		goto out;
-	}
-
-	error = dax_get_pfn(&bh, &pfn, blkbits);
-	if (error > 0)
-		error = vm_insert_mixed(vma, vaddr, pfn);
-
-	mutex_unlock(&mapping->i_mmap_mutex);
+	error = dax_insert_mapping(inode, &bh, vma, vmf);
 
  out:
 	if (error == -ENOMEM)
@@ -473,6 +490,7 @@ int dax_zero_page_range(struct inode *inode, loff_t from, unsigned length,
 	/* Block boundary? Nothing to do */
 	if (!length)
 		return 0;
+	BUG_ON((offset + length) > PAGE_CACHE_SIZE);
 
 	memset(&bh, 0, sizeof(bh));
 	bh.b_size = PAGE_CACHE_SIZE;
@@ -484,14 +502,31 @@ int dax_zero_page_range(struct inode *inode, loff_t from, unsigned length,
 		err = dax_get_addr(&bh, &addr, inode->i_blkbits);
 		if (err < 0)
 			return err;
-		/*
-		 * ext4 sometimes asks to zero past the end of a block.  It
-		 * really just wants to zero to the end of the block.
-		 */
-		length = min_t(unsigned, length, PAGE_CACHE_SIZE - offset);
 		memset(addr + offset, 0, length);
 	}
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(dax_zero_page_range);
+
+/**
+ * dax_truncate_page - handle a partial page being truncated in a DAX file
+ * @inode: The file being truncated
+ * @from: The file offset that is being truncated to
+ * @get_block: The filesystem method used to translate file offsets to blocks
+ *
+ * Similar to block_truncate_page(), this function can be called by a
+ * filesystem when it is truncating an DAX file to handle the partial page.
+ *
+ * We work in terms of PAGE_CACHE_SIZE here for commonality with
+ * block_truncate_page(), but we could go down to PAGE_SIZE if the filesystem
+ * took care of disposing of the unnecessary blocks.  Even if the filesystem
+ * block size is smaller than PAGE_SIZE, we have to zero the rest of the page
+ * since the file might be mmaped.
+ */
+int dax_truncate_page(struct inode *inode, loff_t from, get_block_t get_block)
+{
+	unsigned length = PAGE_CACHE_ALIGN(from) - from;
+	return dax_zero_page_range(inode, from, length, get_block);
+}
+EXPORT_SYMBOL_GPL(dax_truncate_page);
