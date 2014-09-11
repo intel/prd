@@ -357,6 +357,7 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 			size = (i_size_read(inode) + PAGE_SIZE - 1) >>
 								PAGE_SHIFT;
 			if (vmf->pgoff >= size) {
+				mutex_unlock(&mapping->i_mmap_mutex);
 				error = -EIO;
 				goto out;
 			}
