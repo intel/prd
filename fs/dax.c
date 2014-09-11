@@ -68,14 +68,6 @@ static long dax_get_addr(struct buffer_head *bh, void **addr, unsigned blkbits)
 	return bdev_direct_access(bh->b_bdev, sector, addr, &pfn, bh->b_size);
 }
 
-static long dax_get_pfn(struct buffer_head *bh, unsigned long *pfn,
-							unsigned blkbits)
-{
-	void *addr;
-	sector_t sector = bh->b_blocknr << (blkbits - 9);
-	return bdev_direct_access(bh->b_bdev, sector, &addr, pfn, bh->b_size);
-}
-
 static void dax_new_buf(void *addr, unsigned size, unsigned first, loff_t pos,
 			loff_t end)
 {
@@ -283,6 +275,54 @@ static int copy_user_bh(struct page *to, struct buffer_head *bh,
 	return 0;
 }
 
+static int dax_insert_mapping(struct inode *inode, struct buffer_head *bh,
+			struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	struct address_space *mapping = inode->i_mapping;
+	sector_t sector = bh->b_blocknr << (inode->i_blkbits - 9);
+	unsigned long vaddr = (unsigned long)vmf->virtual_address;
+	void *addr;
+	unsigned long pfn;
+	pgoff_t size;
+	int error;
+
+	mutex_lock(&mapping->i_mmap_mutex);
+
+	/*
+	 * Check truncate didn't happen while we were allocating a block.
+	 * If it did, this block may or may not be still allocated to the
+	 * file.  We can't tell the filesystem to free it because we can't
+	 * take i_mutex here.  In the worst case, the file still has blocks
+	 * allocated past the end of the file.
+	 */
+	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (unlikely(vmf->pgoff >= size)) {
+		error = -EIO;
+		goto out;
+	}
+
+	error = bdev_direct_access(bh->b_bdev, sector, &addr, &pfn, bh->b_size);
+	if (error < 0)
+		goto out;
+	if (error < PAGE_SIZE) {
+		error = -EIO;
+		goto out;
+	}
+
+	if (buffer_unwritten(bh) || buffer_new(bh)) {
+		clear_page(addr);
+		if (bh->b_end_io)
+			bh->b_end_io(bh, 1);
+	}
+
+	error = vm_insert_mixed(vma, vaddr, pfn);
+
+ out:
+	mutex_unlock(&mapping->i_mmap_mutex);
+
+	return error;
+}
+
 static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 			get_block_t get_block)
 {
@@ -295,7 +335,6 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 	unsigned blkbits = inode->i_blkbits;
 	sector_t block;
 	pgoff_t size;
-	unsigned long pfn;
 	int error;
 	int major = 0;
 
@@ -365,14 +404,6 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 		return VM_FAULT_LOCKED;
 	}
 
-	if (buffer_unwritten(&bh) || buffer_new(&bh)) {
-		error = dax_clear_blocks(inode, bh.b_blocknr, bh.b_size);
-		if (error)
-			goto out;
-		if (bh.b_end_io)
-			bh.b_end_io(&bh, 1);
-	}
-
 	/* Check we didn't race with a read fault installing a new page */
 	if (!page && major)
 		page = find_lock_page(mapping, vmf->pgoff);
@@ -385,27 +416,7 @@ static int do_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf,
 		page_cache_release(page);
 	}
 
-	mutex_lock(&mapping->i_mmap_mutex);
-
-	/*
-	 * Check truncate didn't happen while we were allocating a block.
-	 * If it did, this block may or may not be still allocated to the
-	 * file.  We can't tell the filesystem to free it because we can't
-	 * take i_mutex here.  In the worst case, the file still has blocks
-	 * allocated past the end of the file.
-	 */
-	size = (i_size_read(inode) + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	if (unlikely(vmf->pgoff >= size)) {
-		mutex_unlock(&mapping->i_mmap_mutex);
-		error = -EIO;
-		goto out;
-	}
-
-	error = dax_get_pfn(&bh, &pfn, blkbits);
-	if (error > 0)
-		error = vm_insert_mixed(vma, vaddr, pfn);
-
-	mutex_unlock(&mapping->i_mmap_mutex);
+	error = dax_insert_mapping(inode, &bh, vma, vmf);
 
  out:
 	if (error == -ENOMEM)
