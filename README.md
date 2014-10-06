@@ -87,6 +87,7 @@ You can use DAX with PMEM by making an ext4 on your new /dev/pmem<N> devices
 and then mounting them with the "dax" option:
 
 <pre>
+# modprobe pmem
 # mkdir /mnt/mem
 # mkfs.ext4 /dev/pmem0
 # mount -o dax /dev/pmem0 /mnt/mem
