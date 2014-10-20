@@ -1956,17 +1956,23 @@ EXPORT_SYMBOL(inode_owner_or_capable);
 /*
  * Direct i/o helper functions
  */
-static void __inode_dio_wait(struct inode *inode)
+static int __inode_dio_wait(struct inode *inode)
 {
+	int ret = 0;
 	wait_queue_head_t *wq = bit_waitqueue(&inode->i_state, __I_DIO_WAKEUP);
 	DEFINE_WAIT_BIT(q, &inode->i_state, __I_DIO_WAKEUP);
 
 	do {
-		prepare_to_wait(wq, &q.wait, TASK_UNINTERRUPTIBLE);
+		prepare_to_wait(wq, &q.wait, TASK_KILLABLE);
 		if (atomic_read(&inode->i_dio_count))
 			schedule();
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
 	} while (atomic_read(&inode->i_dio_count));
 	finish_wait(wq, &q.wait);
+	return ret;
 }
 
 /**
@@ -1979,10 +1985,11 @@ static void __inode_dio_wait(struct inode *inode)
  * Must be called under a lock that serializes taking new references
  * to i_dio_count, usually by inode->i_mutex.
  */
-void inode_dio_wait(struct inode *inode)
+int inode_dio_wait(struct inode *inode)
 {
 	if (atomic_read(&inode->i_dio_count))
-		__inode_dio_wait(inode);
+		return __inode_dio_wait(inode);
+	return 0;
 }
 EXPORT_SYMBOL(inode_dio_wait);
 

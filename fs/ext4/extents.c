@@ -4683,7 +4683,9 @@ static int ext4_alloc_file_blocks(struct file *file, ext4_lblk_t offset,
 
 	/* Wait all existing dio workers, newcomers will block on i_mutex */
 	ext4_inode_block_unlocked_dio(inode);
-	inode_dio_wait(inode);
+	ret = inode_dio_wait(inode);
+	if (ret)
+		return ret;
 
 	/*
 	 * credits to insert 1 extent into extent tree
@@ -4858,7 +4860,9 @@ static long ext4_zero_range(struct file *file, loff_t offset,
 
 		/* Wait all existing dio workers, newcomers will block on i_mutex */
 		ext4_inode_block_unlocked_dio(inode);
-		inode_dio_wait(inode);
+		ret = inode_dio_wait(inode);
+		if (ret)
+			goto out_dio;
 
 		ret = ext4_alloc_file_blocks(file, lblk, max_blocks, new_size,
 					     flags, mode);
@@ -5524,7 +5528,9 @@ int ext4_collapse_range(struct inode *inode, loff_t offset, loff_t len)
 
 	/* Wait for existing dio to complete */
 	ext4_inode_block_unlocked_dio(inode);
-	inode_dio_wait(inode);
+	ret = inode_dio_wait(inode);
+	if (ret)
+		goto out_dio;
 
 	credits = ext4_writepage_trans_blocks(inode);
 	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE, credits);
@@ -5660,7 +5666,9 @@ int ext4_insert_range(struct inode *inode, loff_t offset, loff_t len)
 
 	/* Wait for existing dio to complete */
 	ext4_inode_block_unlocked_dio(inode);
-	inode_dio_wait(inode);
+	ret = inode_dio_wait(inode);
+	if (ret)
+		goto out_mutex;
 
 	credits = ext4_writepage_trans_blocks(inode);
 	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE, credits);

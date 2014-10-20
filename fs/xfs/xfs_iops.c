@@ -828,7 +828,9 @@ xfs_setattr_size(
 	}
 
 	/* Now wait for all direct I/O to complete. */
-	inode_dio_wait(inode);
+	error = inode_dio_wait(inode);
+	if (error)
+		return error;
 
 	/*
 	 * We've already locked out new page faults, so now we can safely remove

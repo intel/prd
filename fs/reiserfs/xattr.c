@@ -581,9 +581,9 @@ reiserfs_xattr_set_handle(struct reiserfs_transaction_handle *th,
 		};
 
 		mutex_lock_nested(&d_inode(dentry)->i_mutex, I_MUTEX_XATTR);
-		inode_dio_wait(d_inode(dentry));
-
-		err = reiserfs_setattr(dentry, &newattrs);
+		err = inode_dio_wait(d_inode(dentry));
+		if (!err)
+			err = reiserfs_setattr(dentry, &newattrs);
 		mutex_unlock(&d_inode(dentry)->i_mutex);
 	} else
 		update_ctime(inode);

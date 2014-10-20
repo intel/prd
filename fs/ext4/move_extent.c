@@ -587,8 +587,12 @@ ext4_move_extents(struct file *o_filp, struct file *d_filp, __u64 orig_blk,
 	/* Wait for all existing dio workers */
 	ext4_inode_block_unlocked_dio(orig_inode);
 	ext4_inode_block_unlocked_dio(donor_inode);
-	inode_dio_wait(orig_inode);
-	inode_dio_wait(donor_inode);
+	ret = inode_dio_wait(orig_inode);
+	if (ret)
+		goto resume;
+	ret = inode_dio_wait(donor_inode);
+	if (ret)
+		goto resume;
 
 	/* Protect extent tree against block allocations via delalloc */
 	ext4_double_down_write_data_sem(orig_inode, donor_inode);
@@ -677,6 +681,7 @@ out:
 	ext4_ext_drop_refs(path);
 	kfree(path);
 	ext4_double_up_write_data_sem(orig_inode, donor_inode);
+resume:
 	ext4_inode_resume_unlocked_dio(orig_inode);
 	ext4_inode_resume_unlocked_dio(donor_inode);
 	unlock_two_nondirectories(orig_inode, donor_inode);

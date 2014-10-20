@@ -618,7 +618,9 @@ restart:
 			 * XFS_IOLOCK_EXCL, and so for most cases this wait is a
 			 * no-op.
 			 */
-			inode_dio_wait(inode);
+			error = inode_dio_wait(inode);
+			if (error)
+				return error;
 			goto restart;
 		}
 		error = xfs_zero_eof(ip, iocb->ki_pos, i_size_read(inode), &zero);
@@ -754,9 +756,11 @@ xfs_file_dio_aio_write(
 	 * If we are doing unaligned IO, wait for all other IO to drain,
 	 * otherwise demote the lock if we had to flush cached pages
 	 */
-	if (unaligned_io)
-		inode_dio_wait(inode);
-	else if (iolock == XFS_IOLOCK_EXCL) {
+	if (unaligned_io) {
+		ret = inode_dio_wait(inode);
+		if (ret)
+			goto out;
+	} else if (iolock == XFS_IOLOCK_EXCL) {
 		xfs_rw_ilock_demote(ip, XFS_IOLOCK_EXCL);
 		iolock = XFS_IOLOCK_SHARED;
 	}

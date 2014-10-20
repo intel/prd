@@ -1441,8 +1441,11 @@ out:
 	}
 	if (!S_ISDIR(inode->i_mode)) {
 		mutex_lock(&inode->i_mutex);
-		if ((attr->ia_valid & ATTR_SIZE) && !hsm_import)
-			inode_dio_wait(inode);
+		if ((attr->ia_valid & ATTR_SIZE) && !hsm_import) {
+			rc = inode_dio_wait(inode);
+			if (rc)
+				return rc;
+		}
 	}
 
 	ll_stats_ops_tally(ll_i2sbi(inode), (attr->ia_valid & ATTR_SIZE) ?

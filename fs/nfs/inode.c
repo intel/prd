@@ -135,7 +135,9 @@ void nfs_evict_inode(struct inode *inode)
 
 int nfs_sync_inode(struct inode *inode)
 {
-	nfs_inode_dio_wait(inode);
+	int err = nfs_inode_dio_wait(inode);
+	if (err)
+		return err;
 	return nfs_wb_all(inode);
 }
 EXPORT_SYMBOL_GPL(nfs_sync_inode);
@@ -532,8 +534,12 @@ nfs_setattr(struct dentry *dentry, struct iattr *attr)
 	trace_nfs_setattr_enter(inode);
 
 	/* Write all dirty data */
-	if (S_ISREG(inode->i_mode))
-		nfs_sync_inode(inode);
+	if (S_ISREG(inode->i_mode)) {
+		error = nfs_sync_inode(inode);
+		if (error)
+			goto out;
+		error = -ENOMEM;
+	}
 
 	fattr = nfs_alloc_fattr();
 	if (fattr == NULL)

@@ -123,8 +123,12 @@ static long swap_inode_boot_loader(struct super_block *sb,
 	/* Wait for all existing dio workers */
 	ext4_inode_block_unlocked_dio(inode);
 	ext4_inode_block_unlocked_dio(inode_bl);
-	inode_dio_wait(inode);
-	inode_dio_wait(inode_bl);
+	err = inode_dio_wait(inode);
+	if (err)
+		goto journal_err_out;
+	err = inode_dio_wait(inode_bl);
+	if (err)
+		goto journal_err_out;
 
 	handle = ext4_journal_start(inode_bl, EXT4_HT_MOVE_EXTENTS, 2);
 	if (IS_ERR(handle)) {

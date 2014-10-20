@@ -516,9 +516,9 @@ extern int nfs_sillyrename(struct inode *dir, struct dentry *dentry);
 /* direct.c */
 void nfs_init_cinfo_from_dreq(struct nfs_commit_info *cinfo,
 			      struct nfs_direct_req *dreq);
-static inline void nfs_inode_dio_wait(struct inode *inode)
+static inline __must_check int nfs_inode_dio_wait(struct inode *inode)
 {
-	inode_dio_wait(inode);
+	return inode_dio_wait(inode);
 }
 extern ssize_t nfs_dreq_bytes_left(struct nfs_direct_req *dreq);
 extern void nfs_direct_set_resched_writes(struct nfs_direct_req *dreq);

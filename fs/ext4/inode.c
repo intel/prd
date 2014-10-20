@@ -3579,7 +3579,9 @@ int ext4_punch_hole(struct inode *inode, loff_t offset, loff_t length)
 
 	/* Wait all existing dio workers, newcomers will block on i_mutex */
 	ext4_inode_block_unlocked_dio(inode);
-	inode_dio_wait(inode);
+	ret = inode_dio_wait(inode);
+	if (ret)
+		goto out_dio;
 
 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
 		credits = ext4_writepage_trans_blocks(inode);
@@ -4756,8 +4758,10 @@ int ext4_setattr(struct dentry *dentry, struct iattr *attr)
 		if (orphan) {
 			if (!ext4_should_journal_data(inode)) {
 				ext4_inode_block_unlocked_dio(inode);
-				inode_dio_wait(inode);
+				rc = inode_dio_wait(inode);
 				ext4_inode_resume_unlocked_dio(inode);
+				if (rc)
+					goto err_out;
 			} else
 				ext4_wait_for_tail_page_commit(inode);
 		}
@@ -5154,7 +5158,11 @@ int ext4_change_inode_journal_flag(struct inode *inode, int val)
 
 	/* Wait for all existing dio workers */
 	ext4_inode_block_unlocked_dio(inode);
-	inode_dio_wait(inode);
+	err = inode_dio_wait(inode);
+	if (err) {
+		ext4_inode_resume_unlocked_dio(inode);
+		return err;
+	}
 
 	jbd2_journal_lock_updates(journal);
 

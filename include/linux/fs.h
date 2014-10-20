@@ -2716,7 +2716,7 @@ static inline ssize_t blockdev_direct_IO(struct kiocb *iocb,
 }
 #endif
 
-void inode_dio_wait(struct inode *inode);
+int __must_check inode_dio_wait(struct inode *inode);
 
 /*
  * inode_dio_begin - signal start of a direct I/O requests

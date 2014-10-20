@@ -400,12 +400,11 @@ static int vvp_do_vmtruncate(struct inode *inode, size_t size)
 	return result;
 }
 
-static int vvp_io_setattr_trunc(const struct lu_env *env,
+static int __must_check vvp_io_setattr_trunc(const struct lu_env *env,
 				const struct cl_io_slice *ios,
 				struct inode *inode, loff_t size)
 {
-	inode_dio_wait(inode);
-	return 0;
+	return inode_dio_wait(inode);
 }
 
 static int vvp_io_setattr_time(const struct lu_env *env,

@@ -1199,7 +1199,9 @@ static int ext2_setsize(struct inode *inode, loff_t newsize)
 	if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
 		return -EPERM;
 
-	inode_dio_wait(inode);
+	error = inode_dio_wait(inode);
+	if (error)
+		return error;
 
 	if (IS_DAX(inode))
 		error = dax_truncate_page(inode, newsize, ext2_get_block);

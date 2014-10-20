@@ -1197,7 +1197,9 @@ xfs_free_file_space(
 	endoffset_fsb = XFS_B_TO_FSBT(mp, offset + len);
 
 	/* wait for the completion of any pending DIOs */
-	inode_dio_wait(VFS_I(ip));
+	error = inode_dio_wait(VFS_I(ip));
+	if (error)
+		goto out;
 
 	rounding = max_t(xfs_off_t, 1 << mp->m_sb.sb_blocklog, PAGE_CACHE_SIZE);
 	ioffset = round_down(offset, rounding);

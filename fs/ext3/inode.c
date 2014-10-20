@@ -3278,8 +3278,11 @@ int ext3_setattr(struct dentry *dentry, struct iattr *attr)
 		ext3_journal_stop(handle);
 	}
 
-	if (attr->ia_valid & ATTR_SIZE)
-		inode_dio_wait(inode);
+	if (attr->ia_valid & ATTR_SIZE) {
+		error = inode_dio_wait(inode);
+		if (error)
+			return error;
+	}
 
 	if (S_ISREG(inode->i_mode) &&
 	    attr->ia_valid & ATTR_SIZE && attr->ia_size < inode->i_size) {

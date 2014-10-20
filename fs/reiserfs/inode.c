@@ -3334,7 +3334,9 @@ int reiserfs_setattr(struct dentry *dentry, struct iattr *attr)
 			goto out;
 		}
 
-		inode_dio_wait(inode);
+		error = inode_dio_wait(inode);
+		if (error)
+			goto out;
 
 		/* fill in hole pointers in the expanding truncate case. */
 		if (attr->ia_size > inode->i_size) {

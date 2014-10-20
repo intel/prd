@@ -4886,10 +4886,11 @@ static int btrfs_setsize(struct inode *inode, struct iattr *attr)
 
 		/* Disable nonlocked read DIO to avoid the end less truncate */
 		btrfs_inode_block_unlocked_dio(inode);
-		inode_dio_wait(inode);
+		ret = inode_dio_wait(inode);
 		btrfs_inode_resume_unlocked_dio(inode);
 
-		ret = btrfs_truncate(inode);
+		if (!ret)
+			ret = btrfs_truncate(inode);
 		if (ret && inode->i_nlink) {
 			int err;
 

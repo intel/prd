@@ -4125,7 +4125,9 @@ static int copy_nocow_pages_for_inode(u64 inum, u64 offset, u64 root,
 
 	/* Avoid truncate/dio/punch hole.. */
 	mutex_lock(&inode->i_mutex);
-	inode_dio_wait(inode);
+	ret = inode_dio_wait(inode);
+	if (ret)
+		goto out;
 
 	physical_for_dev_replace = nocow_ctx->physical_for_dev_replace;
 	io_tree = &BTRFS_I(inode)->io_tree;
