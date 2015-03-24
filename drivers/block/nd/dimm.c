@@ -85,7 +85,7 @@ int __init nd_dimm_init(void)
 	return nd_driver_register(&nd_dimm_driver);
 }
 
-void __exit nd_dimm_exit(void)
+void nd_dimm_exit(void)
 {
 	driver_unregister(&nd_dimm_driver.drv);
 }

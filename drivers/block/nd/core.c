@@ -133,8 +133,8 @@ struct attribute_group nd_bus_attribute_group = {
 };
 EXPORT_SYMBOL_GPL(nd_bus_attribute_group);
 
-struct nd_bus *nd_bus_register(struct device *parent,
-		struct nd_bus_descriptor *nd_desc)
+struct nd_bus *__nd_bus_register(struct device *parent,
+		struct nd_bus_descriptor *nd_desc, struct module *module)
 {
 	struct nd_bus *nd_bus = kzalloc(sizeof(*nd_bus), GFP_KERNEL);
 	int rc;
@@ -148,6 +148,7 @@ struct nd_bus *nd_bus_register(struct device *parent,
 		return NULL;
 	}
 	nd_bus->nd_desc = nd_desc;
+	nd_bus->module = module;
 	nd_bus->dev.parent = parent;
 	nd_bus->dev.release = nd_bus_release;
 	nd_bus->dev.groups = nd_desc->attr_groups;
@@ -171,7 +172,7 @@ struct nd_bus *nd_bus_register(struct device *parent,
 	put_device(&nd_bus->dev);
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(nd_bus_register);
+EXPORT_SYMBOL_GPL(__nd_bus_register);
 
 static int child_unregister(struct device *dev, void *data)
 {
@@ -215,7 +216,12 @@ static __init int libnd_init(void)
 	rc = nd_dimm_init();
 	if (rc)
 		goto err_dimm;
+	rc = nd_region_init();
+	if (rc)
+		goto err_region;
 	return 0;
+ err_region:
+	nd_dimm_exit();
  err_dimm:
 	nd_bus_exit();
 	return rc;
@@ -224,6 +230,7 @@ static __init int libnd_init(void)
 static __exit void libnd_exit(void)
 {
 	WARN_ON(!list_empty(&nd_bus_list));
+	nd_region_exit();
 	nd_dimm_exit();
 	nd_bus_exit();
 }

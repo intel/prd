@@ -69,8 +69,10 @@ struct nd_region_desc {
 };
 
 struct nd_bus;
-struct nd_bus *nd_bus_register(struct device *parent,
-		struct nd_bus_descriptor *nfit_desc);
+struct nd_bus *__nd_bus_register(struct device *parent,
+		struct nd_bus_descriptor *nfit_desc, struct module *module);
+#define nd_bus_register(parent, desc) \
+	__nd_bus_register(parent, desc, THIS_MODULE)
 void nd_bus_unregister(struct nd_bus *nd_bus);
 struct nd_bus *to_nd_bus(struct device *dev);
 struct nd_dimm *to_nd_dimm(struct device *dev);

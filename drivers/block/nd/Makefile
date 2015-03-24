@@ -23,3 +23,5 @@ libnd-y += bus.o
 libnd-y += dimm_devs.o
 libnd-y += dimm.o
 libnd-y += region_devs.o
+libnd-y += region.o
+libnd-y += namespace_devs.o

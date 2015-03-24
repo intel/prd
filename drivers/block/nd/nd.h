@@ -23,6 +23,11 @@ struct nd_dimm_drvdata {
 	void *data;
 };
 
+struct nd_region_namespaces {
+	int count;
+	int active;
+};
+
 struct nd_region {
 	struct device dev;
 	u16 ndr_mappings;
@@ -42,4 +47,7 @@ void nd_device_register(struct device *dev);
 void nd_device_unregister(struct device *dev, enum nd_async_mode mode);
 int nd_dimm_init_nsarea(struct nd_dimm_drvdata *ndd);
 int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd);
+struct nd_region *to_nd_region(struct device *dev);
+int nd_region_to_namespace_type(struct nd_region *nd_region);
+int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
 #endif /* __ND_H__ */

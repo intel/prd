@@ -774,6 +774,7 @@ static struct attribute_group nd_acpi_region_attribute_group = {
 static const struct attribute_group *nd_acpi_region_attribute_groups[] = {
 	&nd_region_attribute_group,
 	&nd_mapping_attribute_group,
+	&nd_device_attribute_group,
 	&nd_acpi_region_attribute_group,
 	NULL,
 };
