@@ -177,8 +177,18 @@ static inline const char *nfit_dimm_cmd_name(unsigned cmd)
 
 
 #define ND_DEVICE_DIMM 1            /* nd_dimm: container for "config data" */
+#define ND_DEVICE_REGION_PMEM 2     /* nd_region: (parent of pmem namespaces) */
+#define ND_DEVICE_REGION_BLOCK 3    /* nd_region: (parent of block namespaces) */
+#define ND_DEVICE_NAMESPACE_IO 4    /* legacy persistent memory */
+#define ND_DEVICE_NAMESPACE_PMEM 5  /* persistent memory namespace (may alias) */
+#define ND_DEVICE_NAMESPACE_BLOCK 6 /* block-data-window namespace (may alias) */
 
 enum nd_driver_flags {
 	ND_DRIVER_DIMM            = 1 << ND_DEVICE_DIMM,
+	ND_DRIVER_REGION_PMEM     = 1 << ND_DEVICE_REGION_PMEM,
+	ND_DRIVER_REGION_BLOCK    = 1 << ND_DEVICE_REGION_BLOCK,
+	ND_DRIVER_NAMESPACE_IO    = 1 << ND_DEVICE_NAMESPACE_IO,
+	ND_DRIVER_NAMESPACE_PMEM  = 1 << ND_DEVICE_NAMESPACE_PMEM,
+	ND_DRIVER_NAMESPACE_BLOCK = 1 << ND_DEVICE_NAMESPACE_BLOCK,
 };
 #endif /* __NDCTL_H__ */

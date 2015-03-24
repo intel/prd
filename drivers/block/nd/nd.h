@@ -22,6 +22,11 @@ struct nd_dimm_drvdata {
 	void *data;
 };
 
+struct nd_region_namespaces {
+	int count;
+	int active;
+};
+
 struct nd_mapping {
 	struct nd_dimm *nd_dimm;
 	u64 start;
@@ -56,4 +61,6 @@ int nd_dimm_init_nsarea(struct nd_dimm_drvdata *ndd);
 int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd);
 int nd_dimm_firmware_status(struct device *dev);
 struct nd_region *to_nd_region(struct device *dev);
+int nd_region_to_namespace_type(struct nd_region *nd_region);
+int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
 #endif /* __ND_H__ */

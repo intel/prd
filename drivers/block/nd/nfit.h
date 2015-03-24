@@ -229,7 +229,10 @@ struct nfit_bus_descriptor {
 };
 
 struct nd_bus;
-struct nd_bus *nfit_bus_register(struct device *parent,
-		struct nfit_bus_descriptor *nfit_desc);
+#define nfit_bus_register(parent, desc) \
+	__nfit_bus_register(parent, desc, THIS_MODULE)
+struct nd_bus *__nfit_bus_register(struct device *parent,
+		struct nfit_bus_descriptor *nfit_desc,
+		struct module *module);
 void nfit_bus_unregister(struct nd_bus *nd_bus);
 #endif /* __NFIT_H__ */

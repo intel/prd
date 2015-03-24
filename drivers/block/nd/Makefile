@@ -24,3 +24,5 @@ nd-y += bus.o
 nd-y += dimm_devs.o
 nd-y += dimm.o
 nd-y += region_devs.o
+nd-y += region.o
+nd-y += namespace_devs.o

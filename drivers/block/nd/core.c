@@ -192,7 +192,7 @@ static const struct attribute_group *nd_bus_attribute_groups[] = {
 };
 
 static void *nd_bus_new(struct device *parent,
-		struct nfit_bus_descriptor *nfit_desc)
+		struct nfit_bus_descriptor *nfit_desc, struct module *module)
 {
 	struct nd_bus *nd_bus = kzalloc(sizeof(*nd_bus), GFP_KERNEL);
 	int rc;
@@ -212,6 +212,7 @@ static void *nd_bus_new(struct device *parent,
 		return NULL;
 	}
 	nd_bus->nfit_desc = nfit_desc;
+	nd_bus->module = module;
 	nd_bus->dev.parent = parent;
 	nd_bus->dev.release = nd_bus_release;
 	nd_bus->dev.groups = nd_bus_attribute_groups;
@@ -595,15 +596,16 @@ static struct nd_bus *nd_bus_probe(struct nd_bus *nd_bus)
 
 }
 
-struct nd_bus *nfit_bus_register(struct device *parent,
-		struct nfit_bus_descriptor *nfit_desc)
+struct nd_bus *__nfit_bus_register(struct device *parent,
+		struct nfit_bus_descriptor *nfit_desc,
+		struct module *module)
 {
 	static DEFINE_MUTEX(mutex);
 	struct nd_bus *nd_bus;
 
 	/* enforce single bus at a time registration */
 	mutex_lock(&mutex);
-	nd_bus = nd_bus_new(parent, nfit_desc);
+	nd_bus = nd_bus_new(parent, nfit_desc, module);
 	nd_bus = nd_bus_probe(nd_bus);
 	mutex_unlock(&mutex);
 
@@ -612,7 +614,7 @@ struct nd_bus *nfit_bus_register(struct device *parent,
 
 	return nd_bus;
 }
-EXPORT_SYMBOL(nfit_bus_register);
+EXPORT_SYMBOL(__nfit_bus_register);
 
 void nfit_bus_unregister(struct nd_bus *nd_bus)
 {
@@ -649,7 +651,12 @@ static __init int nd_core_init(void)
 	rc = nd_dimm_init();
 	if (rc)
 		goto err_dimm;
+	rc = nd_region_init();
+	if (rc)
+		goto err_region;
 	return 0;
+ err_region:
+	nd_dimm_exit();
  err_dimm:
 	nd_bus_exit();
 	return rc;
@@ -659,6 +666,7 @@ static __init int nd_core_init(void)
 static __exit void nd_core_exit(void)
 {
 	WARN_ON(!list_empty(&nd_bus_list));
+	nd_region_exit();
 	nd_dimm_exit();
 	nd_bus_exit();
 }
