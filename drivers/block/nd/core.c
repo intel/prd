@@ -14,12 +14,15 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/uuid.h>
 #include <linux/io.h>
 #include "nd-private.h"
 #include "nfit.h"
 
+LIST_HEAD(nd_bus_list);
+DEFINE_MUTEX(nd_bus_list_mutex);
 static DEFINE_IDA(nd_ida);
 
 static bool warn_checksum;
@@ -68,6 +71,53 @@ struct nd_bus *to_nd_bus(struct device *dev)
 	return nd_bus;
 }
 
+static const char *nd_bus_provider(struct nd_bus *nd_bus)
+{
+	struct nfit_bus_descriptor *nfit_desc = nd_bus->nfit_desc;
+	struct device *parent = nd_bus->dev.parent;
+
+	if (nfit_desc->provider_name)
+		return nfit_desc->provider_name;
+	else if (parent)
+		return dev_name(parent);
+	else
+		return "unknown";
+}
+
+static ssize_t provider_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_bus *nd_bus = to_nd_bus(dev);
+
+	return sprintf(buf, "%s\n", nd_bus_provider(nd_bus));
+}
+static DEVICE_ATTR_RO(provider);
+
+static ssize_t revision_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_bus *nd_bus = to_nd_bus(dev);
+	struct nfit __iomem *nfit = nd_bus->nfit_desc->nfit_base;
+
+	return sprintf(buf, "%d\n", readb(&nfit->revision));
+}
+static DEVICE_ATTR_RO(revision);
+
+static struct attribute *nd_bus_attributes[] = {
+	&dev_attr_provider.attr,
+	&dev_attr_revision.attr,
+	NULL,
+};
+
+static struct attribute_group nd_bus_attribute_group = {
+	.attrs = nd_bus_attributes,
+};
+
+static const struct attribute_group *nd_bus_attribute_groups[] = {
+	&nd_bus_attribute_group,
+	NULL,
+};
+
 static void *nd_bus_new(struct device *parent,
 		struct nfit_bus_descriptor *nfit_desc)
 {
@@ -81,6 +131,7 @@ static void *nd_bus_new(struct device *parent,
 	INIT_LIST_HEAD(&nd_bus->bdws);
 	INIT_LIST_HEAD(&nd_bus->memdevs);
 	INIT_LIST_HEAD(&nd_bus->dimms);
+	INIT_LIST_HEAD(&nd_bus->list);
 	nd_bus->id = ida_simple_get(&nd_ida, 0, 0, GFP_KERNEL);
 	if (nd_bus->id < 0) {
 		kfree(nd_bus);
@@ -89,6 +140,7 @@ static void *nd_bus_new(struct device *parent,
 	nd_bus->nfit_desc = nfit_desc;
 	nd_bus->dev.parent = parent;
 	nd_bus->dev.release = nd_bus_release;
+	nd_bus->dev.groups = nd_bus_attribute_groups;
 	dev_set_name(&nd_bus->dev, "ndbus%d", nd_bus->id);
 	rc = device_register(&nd_bus->dev);
 	if (rc) {
@@ -428,6 +480,14 @@ static struct nd_bus *nd_bus_probe(struct nd_bus *nd_bus)
 	if (rc)
 		goto err;
 
+	rc = nd_bus_create_ndctl(nd_bus);
+	if (rc)
+		goto err;
+
+	mutex_lock(&nd_bus_list_mutex);
+	list_add_tail(&nd_bus->list, &nd_bus_list);
+	mutex_unlock(&nd_bus_list_mutex);
+
 	return nd_bus;
  err:
 	put_device(&nd_bus->dev);
@@ -458,6 +518,13 @@ void nfit_bus_unregister(struct nd_bus *nd_bus)
 {
 	if (!nd_bus)
 		return;
+
+	mutex_lock(&nd_bus_list_mutex);
+	list_del_init(&nd_bus->list);
+	mutex_unlock(&nd_bus_list_mutex);
+
+	nd_bus_destroy_ndctl(nd_bus);
+
 	device_unregister(&nd_bus->dev);
 }
 EXPORT_SYMBOL(nfit_bus_unregister);
@@ -472,11 +539,13 @@ static __init int nd_core_init(void)
 	BUILD_BUG_ON(sizeof(struct nfit_dcr) != 80);
 	BUILD_BUG_ON(sizeof(struct nfit_bdw) != 40);
 
-	return 0;
+	return nd_bus_init();
 }
 
 static __exit void nd_core_exit(void)
 {
+	WARN_ON(!list_empty(&nd_bus_list));
+	nd_bus_exit();
 }
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Intel Corporation");

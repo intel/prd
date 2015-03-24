@@ -57,5 +57,10 @@ struct nd_mem {
 	struct nfit_spa __iomem *nfit_spa_bdw;
 	struct list_head list;
 };
+
 struct nd_bus *to_nd_bus(struct device *dev);
+int __init nd_bus_init(void);
+void __exit nd_bus_exit(void);
+int nd_bus_create_ndctl(struct nd_bus *nd_bus);
+void nd_bus_destroy_ndctl(struct nd_bus *nd_bus);
 #endif /* __ND_PRIVATE_H__ */

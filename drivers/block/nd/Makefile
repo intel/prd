@@ -20,3 +20,4 @@ obj-$(CONFIG_NFIT_ACPI) += nd_acpi.o
 nd_acpi-y := acpi.o
 
 nd-y := core.o
+nd-y += bus.o
