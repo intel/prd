@@ -27,5 +27,6 @@ nd-y += dimm.o
 nd-y += region_devs.o
 nd-y += region.o
 nd-y += namespace_devs.o
+nd-y += label.o
 
 nd_pmem-y := pmem.o
