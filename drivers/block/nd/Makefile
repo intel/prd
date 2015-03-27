@@ -31,3 +31,4 @@ libnd-y += dimm.o
 libnd-y += region_devs.o
 libnd-y += region.o
 libnd-y += namespace_devs.o
+libnd-y += label.o

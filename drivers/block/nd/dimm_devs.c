@@ -92,8 +92,12 @@ int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd)
 	if (ndd->data)
 		return 0;
 
-	if (ndd->nsarea.status || ndd->nsarea.max_xfer == 0)
+	if (ndd->nsarea.status || ndd->nsarea.max_xfer == 0
+			|| ndd->nsarea.config_size < ND_LABEL_MIN_SIZE) {
+		dev_dbg(ndd->dev, "failed to init config data area: (%d:%d)\n",
+				ndd->nsarea.max_xfer, ndd->nsarea.config_size);
 		return -ENXIO;
+	}
 
 	ndd->data = kmalloc(ndd->nsarea.config_size, GFP_KERNEL);
 	if (!ndd->data)

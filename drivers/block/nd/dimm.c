@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/nd.h>
+#include "label.h"
 #include "nd.h"
 
 static void free_data(struct nd_dimm_drvdata *ndd)
@@ -42,7 +43,12 @@ static int nd_dimm_probe(struct device *dev)
 		return -ENOMEM;
 
 	dev_set_drvdata(dev, ndd);
-        ndd->dev = dev;
+	ndd->dpa.name = dev_name(dev);
+	ndd->ns_current = -1;
+	ndd->ns_next = -1;
+	ndd->dpa.start = 0;
+	ndd->dpa.end = -1;
+	ndd->dev = dev;
 
 	rc = nd_dimm_init_nsarea(ndd);
 	if (rc)
@@ -54,18 +60,34 @@ static int nd_dimm_probe(struct device *dev)
 
 	dev_dbg(dev, "config data size: %d\n", ndd->nsarea.config_size);
 
+	nd_bus_lock(dev);
+	ndd->ns_current = nd_label_validate(ndd);
+	ndd->ns_next = nd_label_next_nsindex(ndd->ns_current);
+	nd_label_copy(ndd, to_next_namespace_index(ndd),
+			to_current_namespace_index(ndd));
+	rc = nd_label_reserve_dpa(ndd);
+	nd_bus_unlock(dev);
+
+	if (rc)
+		goto err;
+
 	return 0;
 
  err:
 	free_data(ndd);
 	return rc;
-
 }
 
 static int nd_dimm_remove(struct device *dev)
 {
 	struct nd_dimm_drvdata *ndd = dev_get_drvdata(dev);
+	struct resource *res, *_r;
 
+	nd_bus_lock(dev);
+	dev_set_drvdata(dev, NULL);
+	for_each_dpa_resource_safe(ndd, res, _r)
+		__release_region(&ndd->dpa, res->start, resource_size(res));
+	nd_bus_unlock(dev);
 	free_data(ndd);
 
 	return 0;
