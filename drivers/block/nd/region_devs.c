@@ -10,7 +10,10 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  */
+#include <linux/scatterlist.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/sort.h>
 #include <linux/io.h>
 #include "nd-private.h"
 #include "nd.h"
@@ -133,6 +136,21 @@ static ssize_t nstype_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(nstype);
 
+static ssize_t set_cookie_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_region *nd_region = to_nd_region(dev);
+	struct nd_interleave_set *nd_set = nd_region->nd_set;
+
+	if (is_nd_pmem(dev) && nd_set)
+		/* pass, should be precluded by nd_region_visible */;
+	else
+		return -ENXIO;
+
+	return sprintf(buf, "%#llx\n", nd_set->cookie);
+}
+static DEVICE_ATTR_RO(set_cookie);
+
 static ssize_t init_namespaces_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -149,14 +167,80 @@ static struct attribute *nd_region_attributes[] = {
 	&dev_attr_size.attr,
 	&dev_attr_nstype.attr,
 	&dev_attr_mappings.attr,
+	&dev_attr_set_cookie.attr,
 	&dev_attr_init_namespaces.attr,
 	NULL,
 };
 
+static umode_t nd_region_visible(struct kobject *kobj, struct attribute *a, int n)
+{
+	struct device *dev = container_of(kobj, typeof(*dev), kobj);
+	struct nd_region *nd_region = to_nd_region(dev);
+	struct nd_interleave_set *nd_set = nd_region->nd_set;
+
+	if (a != &dev_attr_set_cookie.attr)
+		return a->mode;
+
+	if (is_nd_pmem(dev) && nd_set)
+			return a->mode;
+
+	return 0;
+}
+
 struct attribute_group nd_region_attribute_group = {
 	.attrs = nd_region_attributes,
+	.is_visible = nd_region_visible,
 };
 EXPORT_SYMBOL_GPL(nd_region_attribute_group);
+
+/*
+ * Upon successful probe/remove, take/release a reference on the
+ * associated interleave set (if present)
+ */
+static void nd_region_notify_driver_action(struct nd_bus *nd_bus,
+		struct device *dev, int rc, bool probe)
+{
+	if (rc)
+		return;
+
+	if (is_nd_pmem(dev) || is_nd_blk(dev)) {
+		struct nd_region *nd_region = to_nd_region(dev);
+		int i;
+
+		for (i = 0; i < nd_region->ndr_mappings; i++) {
+			struct nd_mapping *nd_mapping = &nd_region->mapping[i];
+			struct nd_dimm *nd_dimm = nd_mapping->nd_dimm;
+
+			if (probe)
+				atomic_inc(&nd_dimm->busy);
+			else
+				atomic_dec(&nd_dimm->busy);
+		}
+	}
+}
+
+void nd_region_probe_start(struct nd_bus *nd_bus, struct device *dev)
+{
+	nd_bus_lock(&nd_bus->dev);
+	nd_bus->probe_active++;
+	nd_bus_unlock(&nd_bus->dev);
+}
+
+void nd_region_probe_end(struct nd_bus *nd_bus, struct device *dev, int rc)
+{
+	nd_bus_lock(&nd_bus->dev);
+	nd_region_notify_driver_action(nd_bus, dev, rc, true);
+	if (--nd_bus->probe_active == 0)
+		wake_up(&nd_bus->probe_wait);
+	nd_bus_unlock(&nd_bus->dev);
+}
+
+void nd_region_notify_remove(struct nd_bus *nd_bus, struct device *dev, int rc)
+{
+	nd_bus_lock(dev);
+	nd_region_notify_driver_action(nd_bus, dev, rc, false);
+	nd_bus_unlock(dev);
+}
 
 static ssize_t mappingN(struct device *dev, char *buf, int n)
 {
@@ -317,6 +401,7 @@ static noinline struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 	}
 	nd_region->ndr_mappings = ndr_desc->num_mappings;
 	nd_region->provider_data = ndr_desc->provider_data;
+	nd_region->nd_set = ndr_desc->nd_set;
 	dev = &nd_region->dev;
 	dev_set_name(dev, "region%d", nd_region->id);
 	dev->parent = &nd_bus->dev;

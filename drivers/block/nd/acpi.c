@@ -15,6 +15,7 @@
 #include <linux/ndctl.h>
 #include <linux/list.h>
 #include <linux/acpi.h>
+#include <linux/sort.h>
 #include "acpi_nfit.h"
 #include "libnd.h"
 
@@ -779,6 +780,90 @@ static const struct attribute_group *nd_acpi_region_attribute_groups[] = {
 	NULL,
 };
 
+/* enough info to uniquely specify an interleave set */
+struct nfit_set_info {
+	struct nfit_set_info_map {
+		u64 region_spa_offset;
+		u32 serial_number;
+		u32 pad;
+	} mapping[0];
+};
+
+static size_t sizeof_nfit_set_info(int num_mappings)
+{
+	return sizeof(struct nfit_set_info)
+		+ num_mappings * sizeof(struct nfit_set_info_map);
+}
+
+static int cmp_map(const void *m0, const void *m1)
+{
+	const struct nfit_set_info_map *map0 = m0;
+	const struct nfit_set_info_map *map1 = m1;
+
+	return memcmp(&map0->region_spa_offset, &map1->region_spa_offset,
+			sizeof(u64));
+}
+
+/* Retrieve the nth entry referencing this spa */
+static struct acpi_nfit_memdev *memdev_from_spa(
+		struct acpi_nfit_desc *acpi_desc, u16 spa_index, int n)
+{
+        struct nfit_memdev *nfit_memdev;
+
+        list_for_each_entry(nfit_memdev, &acpi_desc->memdevs, list)
+                if (nfit_memdev->memdev->spa_index == spa_index)
+                        if (n-- == 0)
+                                return nfit_memdev->memdev;
+        return NULL;
+}
+
+static int nd_acpi_init_interleave_set(struct acpi_nfit_desc *acpi_desc,
+		struct nd_region_desc *ndr_desc, struct acpi_nfit_spa *spa)
+{
+	u16 num_mappings = ndr_desc->num_mappings;
+	int i, spa_type = nfit_spa_type(spa);
+	struct device *dev = acpi_desc->dev;
+	struct nd_interleave_set *nd_set;
+	struct nfit_set_info *info;
+
+	if (spa_type == NFIT_SPA_PM || spa_type == NFIT_SPA_VOLATILE)
+		/* pass */;
+	else
+		return 0;
+
+	nd_set = devm_kzalloc(dev, sizeof(*nd_set), GFP_KERNEL);
+	if (!nd_set)
+		return -ENOMEM;
+
+	info = devm_kzalloc(dev, sizeof_nfit_set_info(num_mappings), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+	for (i = 0; i < num_mappings; i++) {
+		struct nd_mapping *nd_mapping = &ndr_desc->nd_mapping[i];
+		struct nfit_set_info_map *map = &info->mapping[i];
+		struct nd_dimm *nd_dimm = nd_mapping->nd_dimm;
+		struct nfit_mem *nfit_mem = nd_dimm_provider_data(nd_dimm);
+		struct acpi_nfit_memdev *memdev = memdev_from_spa(acpi_desc,
+				spa->spa_index, i);
+
+		if (!memdev || !nfit_mem->dcr) {
+			dev_err(dev, "%s: failed to find DCR\n", __func__);
+			return -ENODEV;
+		}
+
+		map->region_spa_offset = memdev->region_spa_offset;
+		map->serial_number = nfit_mem->dcr->serial_number;
+	}
+
+	sort(&info->mapping[0], num_mappings, sizeof(struct nfit_set_info_map),
+			cmp_map, NULL);
+	nd_set->cookie = nd_fletcher64(info, sizeof_nfit_set_info(num_mappings));
+	ndr_desc->nd_set = nd_set;
+	devm_kfree(dev, info);
+
+	return 0;
+}
+
 static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
 		struct nfit_spa *nfit_spa)
 {
@@ -786,7 +871,7 @@ static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
 	struct acpi_nfit_spa *spa = nfit_spa->spa;
 	struct nfit_memdev *nfit_memdev;
 	struct nd_region_desc ndr_desc;
-	int spa_type, count = 0;
+	int spa_type, count = 0, rc;
 	struct resource res;
 	u16 spa_index;
 
@@ -852,6 +937,9 @@ static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
 
 	ndr_desc.nd_mapping = nd_mappings;
 	ndr_desc.num_mappings = count;
+	rc = nd_acpi_init_interleave_set(acpi_desc, &ndr_desc, spa);
+	if (rc)
+		return rc;
 	if (spa_type == NFIT_SPA_PM) {
 		if (!nd_pmem_region_create(acpi_desc->nd_bus, &ndr_desc))
 			return -ENOMEM;

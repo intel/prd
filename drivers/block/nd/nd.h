@@ -35,6 +35,7 @@ struct nd_region {
 	u64 ndr_start;
 	int id;
 	void *provider_data;
+	struct nd_interleave_set *nd_set;
 	struct nd_mapping mapping[0];
 };
 
@@ -50,4 +51,7 @@ int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd);
 struct nd_region *to_nd_region(struct device *dev);
 int nd_region_to_namespace_type(struct nd_region *nd_region);
 int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
+void nd_bus_lock(struct device *dev);
+void nd_bus_unlock(struct device *dev);
+bool is_nd_bus_locked(struct device *dev);
 #endif /* __ND_H__ */
