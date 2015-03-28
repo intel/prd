@@ -79,7 +79,10 @@ static int nd_bus_probe(struct device *dev)
 	if (!try_module_get(provider))
 		return -ENXIO;
 
+	nd_region_probe_start(nd_bus, dev);
 	rc = nd_drv->probe(dev);
+	nd_region_probe_end(nd_bus, dev, rc);
+
 	dev_dbg(&nd_bus->dev, "%s.probe(%s) = %d\n", dev->driver->name,
 			dev_name(dev), rc);
 	if (rc != 0)
@@ -95,6 +98,8 @@ static int nd_bus_remove(struct device *dev)
 	int rc;
 
 	rc = nd_drv->remove(dev);
+	nd_region_notify_remove(nd_bus, dev, rc);
+
 	dev_dbg(&nd_bus->dev, "%s.remove(%s) = %d\n", dev->driver->name,
 			dev_name(dev), rc);
 	module_put(provider);
@@ -269,6 +274,33 @@ void nd_bus_destroy_ndctl(struct nd_bus *nd_bus)
 	device_destroy(nd_class, MKDEV(nd_bus_major, nd_bus->id));
 }
 
+static void wait_nd_bus_probe_idle(struct nd_bus *nd_bus)
+{
+	do {
+		if (nd_bus->probe_active == 0)
+			break;
+		nd_bus_unlock(&nd_bus->dev);
+		wait_event(nd_bus->probe_wait, nd_bus->probe_active == 0);
+		nd_bus_lock(&nd_bus->dev);
+	} while (true);
+}
+
+/* set_config requires an idle interleave set */
+static int nd_cmd_clear_to_send(struct nd_dimm *nd_dimm, unsigned int cmd)
+{
+	struct nd_bus *nd_bus;
+
+	if (!nd_dimm || cmd != NFIT_CMD_SET_CONFIG_DATA)
+		return 0;
+
+	nd_bus = walk_to_nd_bus(&nd_dimm->dev);
+	wait_nd_bus_probe_idle(nd_bus);
+
+	if (atomic_read(&nd_dimm->busy))
+		return -EBUSY;
+	return 0;
+}
+
 static int __nd_ioctl(struct nd_bus *nd_bus, struct nd_dimm *nd_dimm,
 		int read_only, unsigned int cmd, unsigned long arg)
 {
@@ -399,11 +431,18 @@ static int __nd_ioctl(struct nd_bus *nd_bus, struct nd_dimm *nd_dimm,
 		goto out;
 	}
 
+	nd_bus_lock(&nd_bus->dev);
+	rc = nd_cmd_clear_to_send(nd_dimm, _IOC_NR(cmd));
+	if (rc)
+		goto out_unlock;
+
 	rc = nfit_desc->nfit_ctl(nfit_desc, nd_dimm, _IOC_NR(cmd), buf, buf_len);
 	if (rc < 0)
-		goto out;
+		goto out_unlock;
 	if (copy_to_user(p, buf, buf_len))
 		rc = -EFAULT;
+ out_unlock:
+	nd_bus_unlock(&nd_bus->dev);
  out:
 	if (is_vmalloc_addr(buf))
 		vfree(buf);

@@ -50,6 +50,7 @@ enum nd_async_mode {
 
 void nd_device_register(struct device *dev);
 void nd_device_unregister(struct device *dev, enum nd_async_mode mode);
+u64 nd_fletcher64(void __iomem *addr, size_t len);
 extern struct attribute_group nd_device_attribute_group;
 struct nd_dimm;
 u32 to_nfit_handle(struct nd_dimm *nd_dimm);
@@ -63,4 +64,7 @@ int nd_dimm_firmware_status(struct device *dev);
 struct nd_region *to_nd_region(struct device *dev);
 int nd_region_to_namespace_type(struct nd_region *nd_region);
 int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
+void nd_bus_lock(struct device *dev);
+void nd_bus_unlock(struct device *dev);
+bool is_nd_bus_locked(struct device *dev);
 #endif /* __ND_H__ */

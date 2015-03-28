@@ -287,6 +287,22 @@ static ssize_t commands_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(commands);
 
+static ssize_t state_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
+{
+	struct nd_dimm *nd_dimm = to_nd_dimm(dev);
+
+	/*
+	 * The state may be in the process of changing, userspace should
+	 * quiesce probing if it wants a static answer
+	 */
+	nd_bus_lock(dev);
+	nd_bus_unlock(dev);
+	return sprintf(buf, "%s\n", atomic_read(&nd_dimm->busy)
+			? "active" : "idle");
+}
+static DEVICE_ATTR_RO(state);
+
 static struct attribute *nd_dimm_attributes[] = {
 	&dev_attr_handle.attr,
 	&dev_attr_phys_id.attr,
@@ -294,6 +310,7 @@ static struct attribute *nd_dimm_attributes[] = {
 	&dev_attr_device.attr,
 	&dev_attr_format.attr,
 	&dev_attr_serial.attr,
+	&dev_attr_state.attr,
 	&dev_attr_revision.attr,
 	&dev_attr_commands.attr,
 	NULL,
@@ -364,6 +381,7 @@ static struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus,
 	if (nd_dimm->id < 0)
 		goto err_ida;
 
+	atomic_set(&nd_dimm->busy, 0);
 	nd_dimm->nd_mem = nd_mem;
 	dev = &nd_dimm->dev;
 	dev_set_name(dev, "nmem%d", nd_dimm->id);

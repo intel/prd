@@ -10,7 +10,10 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  */
+#include <linux/scatterlist.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/sort.h>
 #include <linux/io.h>
 #include "nd-private.h"
 #include "nfit.h"
@@ -137,6 +140,21 @@ static ssize_t nstype_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(nstype);
 
+static ssize_t set_cookie_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_region *nd_region = to_nd_region(dev);
+	struct nd_spa *nd_spa = nd_region->nd_spa;
+
+	if (is_nd_pmem(dev) && nd_spa->nd_set)
+		/* pass, should be precluded by nd_region_visible */;
+	else
+		return -ENXIO;
+
+	return sprintf(buf, "%#llx\n", nd_spa->nd_set->cookie);
+}
+static DEVICE_ATTR_RO(set_cookie);
+
 static ssize_t init_namespaces_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -154,12 +172,29 @@ static struct attribute *nd_region_attributes[] = {
 	&dev_attr_nstype.attr,
 	&dev_attr_mappings.attr,
 	&dev_attr_spa_index.attr,
+	&dev_attr_set_cookie.attr,
 	&dev_attr_init_namespaces.attr,
 	NULL,
 };
 
+static umode_t nd_region_visible(struct kobject *kobj, struct attribute *a, int n)
+{
+	struct device *dev = container_of(kobj, typeof(*dev), kobj);
+	struct nd_region *nd_region = to_nd_region(dev);
+	struct nd_spa *nd_spa = nd_region->nd_spa;
+
+	if (a != &dev_attr_set_cookie.attr)
+		return a->mode;
+
+	if (is_nd_pmem(dev) && nd_spa->nd_set)
+			return a->mode;
+
+	return 0;
+}
+
 static struct attribute_group nd_region_attribute_group = {
 	.attrs = nd_region_attributes,
+	.is_visible = nd_region_visible,
 };
 
 /*
@@ -201,6 +236,147 @@ static struct nd_mem *nd_memdev_to_mem(struct nd_bus *nd_bus,
 		if (readl(&nd_mem->nfit_mem_dcr->nfit_handle) == nfit_handle)
 			return nd_mem;
 	return NULL;
+}
+
+/* enough info to uniquely specify an interleave set */
+struct nd_set_info {
+	struct nd_set_info_map {
+		u64 region_spa_offset;
+		u32 serial_number;
+		u32 pad;
+	} mapping[0];
+};
+
+static size_t sizeof_nd_set_info(int num_mappings)
+{
+	return sizeof(struct nd_set_info)
+		+ num_mappings * sizeof(struct nd_set_info_map);
+}
+
+static int cmp_map(const void *m0, const void *m1)
+{
+	const struct nd_set_info_map *map0 = m0;
+	const struct nd_set_info_map *map1 = m1;
+
+	return memcmp(&map0->region_spa_offset, &map1->region_spa_offset,
+			sizeof(u64));
+}
+
+static int init_interleave_set(struct nd_bus *nd_bus,
+		struct nd_interleave_set *nd_set, struct nd_spa *nd_spa)
+{
+	u16 spa_index = readw(&nd_spa->nfit_spa->spa_index);
+	int num_mappings = num_nd_mem(nd_bus, spa_index);
+	struct nd_set_info *info;
+	int i;
+
+	info = kzalloc(sizeof_nd_set_info(num_mappings), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+	for (i = 0; i < num_mappings; i++) {
+		struct nd_set_info_map *map = &info->mapping[i];
+		struct nd_memdev *nd_memdev = nd_memdev_from_spa(nd_bus,
+				spa_index, i);
+		struct nd_mem *nd_mem = nd_memdev_to_mem(nd_bus, nd_memdev);
+
+		if (!nd_mem) {
+			dev_err(&nd_bus->dev, "%s: failed to find DCR\n",
+					__func__);
+			kfree(info);
+			return -ENODEV;
+		}
+
+		map->region_spa_offset = readl(
+				&nd_memdev->nfit_mem->region_spa_offset);
+		map->serial_number = readl(&nd_mem->nfit_dcr->serial_number);
+	}
+
+	sort(&info->mapping[0], num_mappings, sizeof(struct nd_set_info_map),
+			cmp_map, NULL);
+	nd_set->cookie = nd_fletcher64(info, sizeof_nd_set_info(num_mappings));
+
+	kfree(info);
+
+	return 0;
+}
+
+int nd_bus_init_interleave_sets(struct nd_bus *nd_bus)
+{
+	struct nd_spa *nd_spa;
+	int rc = 0;
+
+	/* PMEM interleave sets */
+	list_for_each_entry(nd_spa, &nd_bus->spas, list) {
+		u16 spa_index = readw(&nd_spa->nfit_spa->spa_index);
+		int spa_type = nfit_spa_type(nd_spa->nfit_spa);
+		struct nd_interleave_set *nd_set;
+
+		if (spa_type != NFIT_SPA_PM)
+			continue;
+		if (nd_memdev_from_spa(nd_bus, spa_index, 0) == NULL)
+			continue;
+		nd_set = kzalloc(sizeof(*nd_set), GFP_KERNEL);
+		if (!nd_set) {
+			rc = -ENOMEM;
+			break;
+		}
+		nd_spa->nd_set = nd_set;
+
+		rc = init_interleave_set(nd_bus, nd_set, nd_spa);
+		if (rc)
+			break;
+	}
+
+	return rc;
+}
+
+/*
+ * Upon successful probe/remove, take/release a reference on the
+ * associated interleave set (if present)
+ */
+static void nd_region_notify_driver_action(struct nd_bus *nd_bus,
+		struct device *dev, int rc, bool probe)
+{
+	if (rc)
+		return;
+
+	if (is_nd_pmem(dev) || is_nd_blk(dev)) {
+		struct nd_region *nd_region = to_nd_region(dev);
+		int i;
+
+		for (i = 0; i < nd_region->ndr_mappings; i++) {
+			struct nd_mapping *nd_mapping = &nd_region->mapping[i];
+			struct nd_dimm *nd_dimm = nd_mapping->nd_dimm;
+
+			if (probe)
+				atomic_inc(&nd_dimm->busy);
+			else
+				atomic_dec(&nd_dimm->busy);
+		}
+	}
+}
+
+void nd_region_probe_start(struct nd_bus *nd_bus, struct device *dev)
+{
+	nd_bus_lock(&nd_bus->dev);
+	nd_bus->probe_active++;
+	nd_bus_unlock(&nd_bus->dev);
+}
+
+void nd_region_probe_end(struct nd_bus *nd_bus, struct device *dev, int rc)
+{
+	nd_bus_lock(&nd_bus->dev);
+	nd_region_notify_driver_action(nd_bus, dev, rc, true);
+	if (--nd_bus->probe_active == 0)
+		wake_up(&nd_bus->probe_wait);
+	nd_bus_unlock(&nd_bus->dev);
+}
+
+void nd_region_notify_remove(struct nd_bus *nd_bus, struct device *dev, int rc)
+{
+	nd_bus_lock(dev);
+	nd_region_notify_driver_action(nd_bus, dev, rc, false);
+	nd_bus_unlock(dev);
 }
 
 static ssize_t mappingN(struct device *dev, char *buf, int n)

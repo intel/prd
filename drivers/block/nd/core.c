@@ -31,6 +31,36 @@ static bool warn_checksum;
 module_param(warn_checksum, bool, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(warn_checksum, "Turn checksum errors into warnings");
 
+void nd_bus_lock(struct device *dev)
+{
+	struct nd_bus *nd_bus = walk_to_nd_bus(dev);
+
+	if (!nd_bus)
+		return;
+	mutex_lock(&nd_bus->reconfig_mutex);
+}
+EXPORT_SYMBOL(nd_bus_lock);
+
+void nd_bus_unlock(struct device *dev)
+{
+	struct nd_bus *nd_bus = walk_to_nd_bus(dev);
+
+	if (!nd_bus)
+		return;
+	mutex_unlock(&nd_bus->reconfig_mutex);
+}
+EXPORT_SYMBOL(nd_bus_unlock);
+
+bool is_nd_bus_locked(struct device *dev)
+{
+	struct nd_bus *nd_bus = walk_to_nd_bus(dev);
+
+	if (!nd_bus)
+		return false;
+	return mutex_is_locked(&nd_bus->reconfig_mutex);
+}
+EXPORT_SYMBOL(is_nd_bus_locked);
+
 /**
  * nd_dimm_by_handle - lookup an nd_dimm by its corresponding nfit_handle
  * @nd_bus: parent bus of the dimm
@@ -49,6 +79,20 @@ struct nd_dimm *nd_dimm_by_handle(struct nd_bus *nd_bus, u32 nfit_handle)
 	return nd_dimm;
 }
 
+u64 nd_fletcher64(void __iomem *addr, size_t len)
+{
+	u32 lo32 = 0;
+	u64 hi32 = 0;
+	int i;
+
+	for (i = 0; i < len; i += 4) {
+		lo32 = readl(addr + i);
+		hi32 += lo32;
+	}
+
+	return hi32 << 32 | lo32;
+}
+
 static void nd_bus_release(struct device *dev)
 {
 	struct nd_bus *nd_bus = container_of(dev, struct nd_bus, dev);
@@ -60,6 +104,7 @@ static void nd_bus_release(struct device *dev)
 
 	list_for_each_entry_safe(nd_spa, _spa, &nd_bus->spas, list) {
 		list_del_init(&nd_spa->list);
+		kfree(nd_spa->nd_set);
 		kfree(nd_spa);
 	}
 	list_for_each_entry_safe(nd_dcr, _dcr, &nd_bus->dcrs, list) {
@@ -205,8 +250,10 @@ static void *nd_bus_new(struct device *parent,
 	INIT_LIST_HEAD(&nd_bus->memdevs);
 	INIT_LIST_HEAD(&nd_bus->dimms);
 	INIT_LIST_HEAD(&nd_bus->list);
+	init_waitqueue_head(&nd_bus->probe_wait);
 	INIT_RADIX_TREE(&nd_bus->dimm_radix, GFP_KERNEL);
 	nd_bus->id = ida_simple_get(&nd_ida, 0, 0, GFP_KERNEL);
+	mutex_init(&nd_bus->reconfig_mutex);
 	if (nd_bus->id < 0) {
 		kfree(nd_bus);
 		return NULL;
@@ -567,6 +614,10 @@ static struct nd_bus *nd_bus_probe(struct nd_bus *nd_bus)
 	}
 
 	rc = nd_mem_init(nd_bus);
+	if (rc)
+		goto err;
+
+	rc = nd_bus_init_interleave_sets(nd_bus);
 	if (rc)
 		goto err;
 
