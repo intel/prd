@@ -1,0 +1,44 @@
+config ND_ARCH_HAS_IOREMAP_CACHE
+	depends on (X86 || IA64 || ARM || ARM64 || SH || XTENSA)
+	def_bool y
+
+menuconfig NFIT_DEVICES
+	bool "NVDIMM (NFIT) Support"
+	depends on ND_ARCH_HAS_IOREMAP_CACHE
+	depends on PHYS_ADDR_T_64BIT
+	help
+	  Support for non-volatile memory devices defined by the NVDIMM
+	  Firmware Interface Table. (NFIT)  On platforms that define an
+	  NFIT, via ACPI, or other means, a "nd_bus" is registered to
+	  advertise PM (persistent memory) namespaces (/dev/pmemX) and
+	  BLOCK (sliding block data window) namespaces (/dev/ndX). A PM
+	  namespace refers to a system-physical-address-range than may
+	  span multiple DIMMs and support DAX (see CONFIG_DAX).  A BLOCK
+	  namespace refers to a NVDIMM control region which exposes a
+	  register-based windowed access mode to non-volatile memory.
+	  See the NVDIMM Firmware Interface Table specification for more
+	  details.
+
+if NFIT_DEVICES
+
+config ND_CORE
+	tristate "Core: Generic 'nd' Device Model"
+	help
+	  Platform agnostic device model for an NFIT-defined bus.
+	  Publishes resources for a NFIT-persistent-memory driver and/or
+	  NFIT-block-data-window driver to attach.  Exposes a device
+	  topology under a "ndX" bus device and a "/dev/ndctl<N>"
+	  dimm-ioctl message passing interface per registered NFIT
+	  instance.  A userspace library "ndctl" provides an API to
+	  enumerate/manage this subsystem.
+
+config NFIT_ACPI
+	tristate "NFIT ACPI: Discover ACPI-Namespace NFIT Devices"
+	select ND_CORE
+	depends on ACPI
+	help
+	  Infrastructure to probe the ACPI namespace for NVDIMMs and
+	  register the platform-global NFIT blob with the core.  Also
+	  enables the core to craft ACPI._DSM messages for platform/dimm
+	  configuration.
+endif
