@@ -22,6 +22,22 @@ struct nd_dimm_drvdata {
 	void *data;
 };
 
+struct nd_mapping {
+	struct nd_dimm *nd_dimm;
+	u64 start;
+	u64 size;
+};
+
+struct nd_region {
+	struct device dev;
+	struct nd_spa *nd_spa;
+	u16 ndr_mappings;
+	u64 ndr_size;
+	u64 ndr_start;
+	int id;
+	struct nd_mapping mapping[0];
+};
+
 enum nd_async_mode {
 	ND_SYNC,
 	ND_ASYNC,
@@ -39,4 +55,5 @@ void nd_dimm_set_dsm_mask(struct nd_dimm *nd_dimm, unsigned long dsm_mask);
 int nd_dimm_init_nsarea(struct nd_dimm_drvdata *ndd);
 int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd);
 int nd_dimm_firmware_status(struct device *dev);
+struct nd_region *to_nd_region(struct device *dev);
 #endif /* __ND_H__ */

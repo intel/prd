@@ -230,7 +230,7 @@ struct nfit_table_header {
 	__le16 length;
 };
 
-static const char *spa_type_name(u16 type)
+const char *spa_type_name(u16 type)
 {
 	switch (type) {
 	case NFIT_SPA_VOLATILE: return "volatile";
@@ -241,7 +241,7 @@ static const char *spa_type_name(u16 type)
 	}
 }
 
-static int nfit_spa_type(struct nfit_spa __iomem *nfit_spa)
+int nfit_spa_type(struct nfit_spa __iomem *nfit_spa)
 {
 	__u8 uuid[16];
 
@@ -574,6 +574,10 @@ static struct nd_bus *nd_bus_probe(struct nd_bus *nd_bus)
 		goto err;
 
 	rc = nd_bus_register_dimms(nd_bus);
+	if (rc)
+		goto err_child;
+
+	rc = nd_bus_register_regions(nd_bus);
 	if (rc)
 		goto err_child;
 
