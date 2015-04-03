@@ -137,6 +137,8 @@ static void __init e820_print_type(u32 type)
 	case E820_RESERVED_KERN:
 		printk(KERN_CONT "usable");
 		break;
+	case E820_PMEM:
+	case E820_PRAM:
 	case E820_RESERVED:
 		printk(KERN_CONT "reserved");
 		break;
@@ -148,9 +150,6 @@ static void __init e820_print_type(u32 type)
 		break;
 	case E820_UNUSABLE:
 		printk(KERN_CONT "unusable");
-		break;
-	case E820_PRAM:
-		printk(KERN_CONT "persistent (type %u)", type);
 		break;
 	default:
 		printk(KERN_CONT "type %u", type);
@@ -919,7 +918,23 @@ static inline const char *e820_type_to_string(int e820_type)
 	case E820_NVS:	return "ACPI Non-volatile Storage";
 	case E820_UNUSABLE:	return "Unusable memory";
 	case E820_PRAM: return "Persistent RAM";
+	case E820_PMEM: return "Persistent I/O Memory";
 	default:	return "reserved";
+	}
+}
+
+static bool do_mark_busy(u32 type, struct resource *res)
+{
+	if (res->start < (1ULL<<20))
+		return true;
+
+	switch (type) {
+	case E820_RESERVED:
+	case E820_PRAM:
+	case E820_PMEM:
+		return false;
+	default:
+		return true;
 	}
 }
 
@@ -952,9 +967,7 @@ void __init e820_reserve_resources(void)
 		 * pci device BAR resource and insert them later in
 		 * pcibios_resource_survey()
 		 */
-		if (((e820.map[i].type != E820_RESERVED) &&
-		     (e820.map[i].type != E820_PRAM)) ||
-		     res->start < (1ULL<<20)) {
+		if (do_mark_busy(e820.map[i].type, res)) {
 			res->flags |= IORESOURCE_BUSY;
 			insert_resource(&iomem_resource, res);
 		}

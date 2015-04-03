@@ -1227,6 +1227,7 @@ efi_initialize_iomem_resources(struct resource *code_resource,
 			case EFI_RUNTIME_SERVICES_CODE:
 			case EFI_RUNTIME_SERVICES_DATA:
 			case EFI_ACPI_RECLAIM_MEMORY:
+			case EFI_PERSISTENT_MEMORY:
 			default:
 				name = "reserved";
 				break;
