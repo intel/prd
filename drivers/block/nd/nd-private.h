@@ -82,4 +82,5 @@ struct nd_mapping;
 struct resource *nsblk_add_resource(struct nd_region *nd_region,
 		struct nd_dimm_drvdata *ndd, struct nd_namespace_blk *nsblk,
 		resource_size_t start);
+int nd_dimm_num_label_slots(struct nd_dimm_drvdata *ndd);
 #endif /* __ND_PRIVATE_H__ */

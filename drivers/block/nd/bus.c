@@ -136,6 +136,10 @@ static void nd_async_device_unregister(void *d, async_cookie_t cookie)
 {
 	struct device *dev = d;
 
+	/* flush bus operations before delete */
+	nd_bus_lock(dev);
+	nd_bus_unlock(dev);
+
 	device_unregister(dev);
 	put_device(dev);
 }
