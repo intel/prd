@@ -1,7 +1,7 @@
 /*
  * Persistent Memory Driver
  *
- * Copyright (c) 2014, Intel Corporation.
+ * Copyright (c) 2014-2015, Intel Corporation.
  * Copyright (c) 2015, Christoph Hellwig <hch@lst.de>.
  * Copyright (c) 2015, Boaz Harrosh <boaz@plexistor.com>.
  *
@@ -23,6 +23,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
+#include <linux/nd.h>
 
 #define PMEM_MINORS		16
 
@@ -34,10 +35,11 @@ struct pmem_device {
 	phys_addr_t		phys_addr;
 	void			*virt_addr;
 	size_t			size;
+	int			id;
 };
 
 static int pmem_major;
-static atomic_t pmem_index;
+static DEFINE_IDA(pmem_ida);
 
 static void pmem_do_bvec(struct pmem_device *pmem, struct page *page,
 			unsigned int len, unsigned int off, int rw,
@@ -122,12 +124,18 @@ static struct pmem_device *pmem_alloc(struct device *dev, struct resource *res)
 {
 	struct pmem_device *pmem;
 	struct gendisk *disk;
-	int idx, err;
+	int err;
 
 	err = -ENOMEM;
 	pmem = kzalloc(sizeof(*pmem), GFP_KERNEL);
 	if (!pmem)
 		goto out;
+
+	pmem->id = ida_simple_get(&pmem_ida, 0, 0, GFP_KERNEL);
+	if (pmem->id < 0) {
+		err = pmem->id;
+		goto out_free_dev;
+	}
 
 	pmem->phys_addr = res->start;
 	pmem->size = resource_size(res);
@@ -135,7 +143,7 @@ static struct pmem_device *pmem_alloc(struct device *dev, struct resource *res)
 	err = -EINVAL;
 	if (!request_mem_region(pmem->phys_addr, pmem->size, "pmem")) {
 		dev_warn(dev, "could not reserve region [0x%pa:0x%zx]\n", &pmem->phys_addr, pmem->size);
-		goto out_free_dev;
+		goto out_free_ida;
 	}
 
 	/*
@@ -159,15 +167,13 @@ static struct pmem_device *pmem_alloc(struct device *dev, struct resource *res)
 	if (!disk)
 		goto out_free_queue;
 
-	idx = atomic_inc_return(&pmem_index) - 1;
-
 	disk->major		= pmem_major;
-	disk->first_minor	= PMEM_MINORS * idx;
+	disk->first_minor	= PMEM_MINORS * pmem->id;
 	disk->fops		= &pmem_fops;
 	disk->private_data	= pmem;
 	disk->queue		= pmem->pmem_queue;
 	disk->flags		= GENHD_FL_EXT_DEVT;
-	sprintf(disk->disk_name, "pmem%d", idx);
+	sprintf(disk->disk_name, "pmem%d", pmem->id);
 	disk->driverfs_dev = dev;
 	set_capacity(disk, pmem->size >> 9);
 	pmem->pmem_disk = disk;
@@ -182,6 +188,8 @@ out_unmap:
 	iounmap(pmem->virt_addr);
 out_release_region:
 	release_mem_region(pmem->phys_addr, pmem->size);
+out_free_ida:
+	ida_simple_remove(&pmem_ida, pmem->id);
 out_free_dev:
 	kfree(pmem);
 out:
@@ -195,6 +203,7 @@ static void pmem_free(struct pmem_device *pmem)
 	blk_cleanup_queue(pmem->pmem_queue);
 	iounmap(pmem->virt_addr);
 	release_mem_region(pmem->phys_addr, pmem->size);
+	ida_simple_remove(&pmem_ida, pmem->id);
 	kfree(pmem);
 }
 
@@ -236,6 +245,39 @@ static struct platform_driver pmem_driver = {
 	},
 };
 
+static int nd_pmem_probe(struct device *dev)
+{
+	struct nd_namespace_io *nsio = to_nd_namespace_io(dev);
+	struct pmem_device *pmem;
+
+	pmem = pmem_alloc(dev, &nsio->res);
+	if (IS_ERR(pmem))
+		return PTR_ERR(pmem);
+
+	dev_set_drvdata(dev, pmem);
+
+	return 0;
+}
+
+static int nd_pmem_remove(struct device *dev)
+{
+	struct pmem_device *pmem = dev_get_drvdata(dev);
+
+	pmem_free(pmem);
+	return 0;
+}
+
+MODULE_ALIAS("pmem");
+MODULE_ALIAS_ND_DEVICE(ND_DEVICE_NAMESPACE_IO);
+static struct nd_device_driver nd_pmem_driver = {
+	.probe = nd_pmem_probe,
+	.remove = nd_pmem_remove,
+	.drv = {
+		.name = "pmem",
+	},
+	.type = ND_DRIVER_NAMESPACE_IO,
+};
+
 static int __init pmem_init(void)
 {
 	int error;
@@ -244,9 +286,20 @@ static int __init pmem_init(void)
 	if (pmem_major < 0)
 		return pmem_major;
 
+	error = nd_driver_register(&nd_pmem_driver);
+	if (error)
+		goto out_unregister_blkdev;
+
 	error = platform_driver_register(&pmem_driver);
 	if (error)
-		unregister_blkdev(pmem_major, "pmem");
+		goto out_unregister_nd;
+
+	return 0;
+
+ out_unregister_nd:
+	driver_unregister(&nd_pmem_driver.drv);
+ out_unregister_blkdev:
+	unregister_blkdev(pmem_major, "pmem");
 	return error;
 }
 module_init(pmem_init);
@@ -254,6 +307,7 @@ module_init(pmem_init);
 static void pmem_exit(void)
 {
 	platform_driver_unregister(&pmem_driver);
+	driver_unregister(&nd_pmem_driver.drv);
 	unregister_blkdev(pmem_major, "pmem");
 }
 module_exit(pmem_exit);

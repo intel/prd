@@ -16,6 +16,7 @@ endif
 
 obj-$(CONFIG_ND_CORE) += nd.o
 obj-$(CONFIG_NFIT_ACPI) += nd_acpi.o
+obj-$(CONFIG_BLK_DEV_PMEM) += nd_pmem.o
 
 nd_acpi-y := acpi.o
 
@@ -26,3 +27,5 @@ nd-y += dimm.o
 nd-y += region_devs.o
 nd-y += region.o
 nd-y += namespace_devs.o
+
+nd_pmem-y := pmem.o
