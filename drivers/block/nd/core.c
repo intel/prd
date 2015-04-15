@@ -29,6 +29,24 @@ static bool warn_checksum;
 module_param(warn_checksum, bool, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(warn_checksum, "Turn checksum errors into warnings");
 
+/**
+ * nd_dimm_by_handle - lookup an nd_dimm by its corresponding nfit_handle
+ * @nd_bus: parent bus of the dimm
+ * @nfit_handle: handle from the memory-device-to-spa (nfit_mem) structure
+ *
+ * LOCKING: expect nd_bus_list_mutex() held at entry
+ */
+struct nd_dimm *nd_dimm_by_handle(struct nd_bus *nd_bus, u32 nfit_handle)
+{
+	struct nd_dimm *nd_dimm;
+
+	WARN_ON_ONCE(!mutex_is_locked(&nd_bus_list_mutex));
+	nd_dimm = radix_tree_lookup(&nd_bus->dimm_radix, nfit_handle);
+	if (nd_dimm)
+		get_device(&nd_dimm->dev);
+	return nd_dimm;
+}
+
 static void nd_bus_release(struct device *dev)
 {
 	struct nd_bus *nd_bus = container_of(dev, struct nd_bus, dev);
@@ -69,6 +87,19 @@ struct nd_bus *to_nd_bus(struct device *dev)
 
 	WARN_ON(nd_bus->dev.release != nd_bus_release);
 	return nd_bus;
+}
+
+struct nd_bus *walk_to_nd_bus(struct device *nd_dev)
+{
+	struct device *dev;
+
+	for (dev = nd_dev; dev; dev = dev->parent)
+		if (dev->release == nd_bus_release)
+			break;
+	dev_WARN_ONCE(nd_dev, !dev, "invalid dev, not on nd bus\n");
+	if (dev)
+		return to_nd_bus(dev);
+	return NULL;
 }
 
 static const char *nd_bus_provider(struct nd_bus *nd_bus)
@@ -132,6 +163,7 @@ static void *nd_bus_new(struct device *parent,
 	INIT_LIST_HEAD(&nd_bus->memdevs);
 	INIT_LIST_HEAD(&nd_bus->dimms);
 	INIT_LIST_HEAD(&nd_bus->list);
+	INIT_RADIX_TREE(&nd_bus->dimm_radix, GFP_KERNEL);
 	nd_bus->id = ida_simple_get(&nd_ida, 0, 0, GFP_KERNEL);
 	if (nd_bus->id < 0) {
 		kfree(nd_bus);
@@ -431,6 +463,21 @@ static int nd_mem_init(struct nd_bus *nd_bus)
 	return 0;
 }
 
+static int child_unregister(struct device *dev, void *data)
+{
+	/*
+	 * the singular ndctl class device per bus needs to be
+	 * "device_destroy"ed, so skip it here
+	 *
+	 * i.e. remove classless children
+	 */
+	if (dev->class)
+		/* pass */;
+	else
+		device_unregister(dev);
+	return 0;
+}
+
 static struct nd_bus *nd_bus_probe(struct nd_bus *nd_bus)
 {
 	struct nfit_bus_descriptor *nfit_desc = nd_bus->nfit_desc;
@@ -484,11 +531,18 @@ static struct nd_bus *nd_bus_probe(struct nd_bus *nd_bus)
 	if (rc)
 		goto err;
 
+	rc = nd_bus_register_dimms(nd_bus);
+	if (rc)
+		goto err_child;
+
 	mutex_lock(&nd_bus_list_mutex);
 	list_add_tail(&nd_bus->list, &nd_bus_list);
 	mutex_unlock(&nd_bus_list_mutex);
 
 	return nd_bus;
+ err_child:
+	device_for_each_child(&nd_bus->dev, NULL, child_unregister);
+	nd_bus_destroy_ndctl(nd_bus);
  err:
 	put_device(&nd_bus->dev);
 	return NULL;
@@ -523,6 +577,7 @@ void nfit_bus_unregister(struct nd_bus *nd_bus)
 	list_del_init(&nd_bus->list);
 	mutex_unlock(&nd_bus_list_mutex);
 
+	device_for_each_child(&nd_bus->dev, NULL, child_unregister);
 	nd_bus_destroy_ndctl(nd_bus);
 
 	device_unregister(&nd_bus->dev);

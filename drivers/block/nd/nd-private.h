@@ -12,12 +12,15 @@
  */
 #ifndef __ND_PRIVATE_H__
 #define __ND_PRIVATE_H__
+#include <linux/radix-tree.h>
 #include <linux/device.h>
 extern struct list_head nd_bus_list;
 extern struct mutex nd_bus_list_mutex;
+extern struct bus_type nd_bus_type;
 
 struct nd_bus {
 	struct nfit_bus_descriptor *nfit_desc;
+	struct radix_tree_root dimm_radix;
 	struct list_head memdevs;
 	struct list_head dimms;
 	struct list_head spas;
@@ -26,6 +29,16 @@ struct nd_bus {
 	struct list_head list;
 	struct device dev;
 	int id;
+};
+
+struct nd_dimm {
+	struct nd_mem *nd_mem;
+	struct device dev;
+	int id;
+	struct nd_dimm_delete {
+		struct nd_bus *nd_bus;
+		struct nd_mem *nd_mem;
+	} *del_info;
 };
 
 struct nd_spa {
@@ -58,9 +71,15 @@ struct nd_mem {
 	struct list_head list;
 };
 
+struct nd_dimm *nd_dimm_by_handle(struct nd_bus *nd_bus, u32 nfit_handle);
 struct nd_bus *to_nd_bus(struct device *dev);
+struct nd_dimm *to_nd_dimm(struct device *dev);
+struct nd_bus *walk_to_nd_bus(struct device *nd_dev);
+void nd_synchronize(void);
 int __init nd_bus_init(void);
 void __exit nd_bus_exit(void);
+void nd_dimm_delete(struct nd_dimm *nd_dimm);
 int nd_bus_create_ndctl(struct nd_bus *nd_bus);
 void nd_bus_destroy_ndctl(struct nd_bus *nd_bus);
+int nd_bus_register_dimms(struct nd_bus *nd_bus);
 #endif /* __ND_PRIVATE_H__ */
