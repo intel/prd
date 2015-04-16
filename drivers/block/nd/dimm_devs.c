@@ -132,6 +132,55 @@ int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd)
 	return rc;
 }
 
+int nd_dimm_set_config_data(struct nd_dimm_drvdata *ndd, size_t offset,
+		void *buf, size_t len)
+{
+	int rc = validate_dimm(ndd);
+	size_t max_cmd_size, buf_offset;
+	struct nd_cmd_set_config_hdr *cmd;
+	struct nd_bus *nd_bus = walk_to_nd_bus(ndd->dev);
+	struct nd_bus_descriptor *nd_desc = nd_bus->nd_desc;
+
+	if (rc)
+		return rc;
+
+	if (!ndd->data)
+		return -ENXIO;
+
+	if (offset + len > ndd->nsarea.config_size)
+		return -ENXIO;
+
+	max_cmd_size = min_t(u32, PAGE_SIZE, len);
+	max_cmd_size = min_t(u32, max_cmd_size, ndd->nsarea.max_xfer);
+	cmd = kzalloc(max_cmd_size + sizeof(*cmd) + sizeof(u32), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	for (buf_offset = 0; len; len -= cmd->in_length,
+			buf_offset += cmd->in_length) {
+		size_t cmd_size;
+		u32 *status;
+
+		cmd->in_offset = offset + buf_offset;
+		cmd->in_length = min(max_cmd_size, len);
+		memcpy(cmd->in_buf, buf + buf_offset, cmd->in_length);
+
+		/* status is output in the last 4-bytes of the command buffer */
+		cmd_size = sizeof(*cmd) + cmd->in_length + sizeof(u32);
+		status = ((void *) cmd) + cmd_size - sizeof(u32);
+
+		rc = nd_desc->ndctl(nd_desc, to_nd_dimm(ndd->dev),
+				ND_CMD_SET_CONFIG_DATA, cmd, cmd_size);
+		if (rc || *status) {
+			rc = rc ? rc : -ENXIO;
+			break;
+		}
+	}
+	kfree(cmd);
+
+	return rc;
+}
+
 static void nd_dimm_release(struct device *dev)
 {
 	struct nd_dimm *nd_dimm = to_nd_dimm(dev);

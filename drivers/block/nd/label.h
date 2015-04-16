@@ -34,6 +34,7 @@ enum {
 	BTTINFO_MAJOR_VERSION = 1,
 	ND_LABEL_MIN_SIZE = 512 * 129, /* see sizeof_namespace_index() */
 	ND_LABEL_ID_SIZE = 50,
+	ND_NSINDEX_INIT = 0x1,
 };
 
 static const char NSINDEX_SIGNATURE[] = "NAMESPACE_INDEX\0";
@@ -129,4 +130,9 @@ size_t sizeof_namespace_index(struct nd_dimm_drvdata *ndd);
 int nd_label_active_count(struct nd_dimm_drvdata *ndd);
 struct nd_namespace_label __iomem *nd_label_active(
 		struct nd_dimm_drvdata *ndd, int n);
+u32 nd_label_nfree(struct nd_dimm_drvdata *ndd);
+struct nd_region;
+struct nd_namespace_pmem;
+int nd_pmem_namespace_label_update(struct nd_region *nd_region,
+		struct nd_namespace_pmem *nspm, resource_size_t size);
 #endif /* __LABEL_H__ */
