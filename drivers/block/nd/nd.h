@@ -115,6 +115,7 @@ static inline unsigned nd_inc_seq(unsigned seq)
 
 	return next[seq & 3];
 }
+
 enum nd_async_mode {
 	ND_SYNC,
 	ND_ASYNC,
@@ -141,6 +142,8 @@ void nd_dimm_set_dsm_mask(struct nd_dimm *nd_dimm, unsigned long dsm_mask);
 int nd_dimm_init_nsarea(struct nd_dimm_drvdata *ndd);
 int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd);
 int nd_dimm_firmware_status(struct device *dev);
+int nd_dimm_set_config_data(struct nd_dimm_drvdata *ndd, size_t offset,
+		void *buf, size_t len);
 struct nd_region *to_nd_region(struct device *dev);
 int nd_region_to_namespace_type(struct nd_region *nd_region);
 int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
