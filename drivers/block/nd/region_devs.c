@@ -118,7 +118,12 @@ static int is_uuid_busy(struct device *dev, void *data)
 		break;
 	}
 	case ND_DEVICE_NAMESPACE_BLK: {
-		/* TODO: blk namespace support */
+		struct nd_namespace_blk *nsblk = to_nd_namespace_blk(dev);
+
+		if (!nsblk->uuid)
+			break;
+		if (memcmp(uuid, nsblk->uuid, NSLABEL_UUID_LEN) == 0)
+			return -EBUSY;
 		break;
 	}
 	default:
@@ -230,7 +235,7 @@ resource_size_t nd_region_available_dpa(struct nd_region *nd_region)
 				goto retry;
 			}
 		} else if (is_nd_blk(&nd_region->dev)) {
-			/* TODO: BLK Namespace support */
+			available += nd_blk_available_dpa(nd_mapping);
 		}
 	}
 
@@ -355,6 +360,11 @@ static void nd_region_notify_driver_action(struct nd_bus *nd_bus,
 			else
 				atomic_dec(&nd_dimm->busy);
 		}
+	} else if (dev->parent && is_nd_blk(dev->parent) && probe && rc == 0) {
+		struct nd_region *nd_region = to_nd_region(dev->parent);
+
+		if (nd_region->ns_seed == dev)
+			nd_region_create_blk_seed(nd_region);
 	}
 }
 
@@ -541,6 +551,7 @@ static noinline struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 	nd_region->ndr_mappings = ndr_desc->num_mappings;
 	nd_region->provider_data = ndr_desc->provider_data;
 	nd_region->nd_set = ndr_desc->nd_set;
+	ida_init(&nd_region->ns_ida);
 	dev = &nd_region->dev;
 	dev_set_name(dev, "region%d", nd_region->id);
 	dev->parent = &nd_bus->dev;
