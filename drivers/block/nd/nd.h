@@ -97,6 +97,7 @@ static inline struct nd_namespace_label __iomem *nd_get_label(
 struct nd_region {
 	struct device dev;
 	struct nd_spa *nd_spa;
+	struct ida ns_ida;
 	struct device *ns_seed;
 	u16 ndr_mappings;
 	u64 ndr_size;
@@ -125,6 +126,10 @@ void nd_device_unregister(struct device *dev, enum nd_async_mode mode);
 u64 nd_fletcher64(void __iomem *addr, size_t len);
 int nd_uuid_store(struct device *dev, u8 **uuid_out, const char *buf,
 		size_t len);
+ssize_t nd_sector_size_show(unsigned long current_lbasize,
+		const unsigned long *supported, char *buf);
+ssize_t nd_sector_size_store(struct device *dev, const char *buf,
+		unsigned long *current_lbasize, const unsigned long *supported);
 extern struct attribute_group nd_device_attribute_group;
 struct nd_dimm;
 struct nd_dimm_drvdata *to_ndd(struct nd_mapping *nd_mapping);

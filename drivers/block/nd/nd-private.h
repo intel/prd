@@ -17,6 +17,7 @@
 #include <linux/sizes.h>
 #include <linux/mutex.h>
 #include <linux/io.h>
+#include <linux/nd.h>
 #include "nfit.h"
 
 extern struct list_head nd_bus_list;
@@ -26,6 +27,8 @@ extern int nd_dimm_major;
 enum {
 	/* need to set a limit somewhere, but yes, this is likely overkill */
 	ND_IOCTL_MAX_BUFLEN = SZ_4M,
+	/* mark newly adjusted resources as requiring a label update */
+	DPA_RESOURCE_ADJUSTED = 1 << 0,
 };
 
 /*
@@ -116,6 +119,8 @@ void nd_dimm_exit(void);
 int nd_region_exit(void);
 void nd_region_probe_start(struct nd_bus *nd_bus, struct device *dev);
 void nd_region_probe_end(struct nd_bus *nd_bus, struct device *dev, int rc);
+struct nd_region;
+void nd_region_create_blk_seed(struct nd_region *nd_region);
 void nd_region_notify_remove(struct nd_bus *nd_bus, struct device *dev, int rc);
 int nd_bus_create_ndctl(struct nd_bus *nd_bus);
 void nd_bus_destroy_ndctl(struct nd_bus *nd_bus);
@@ -131,10 +136,15 @@ struct nd_dimm_drvdata;
 struct nd_mapping;
 resource_size_t nd_pmem_available_dpa(struct nd_region *nd_region,
 		struct nd_mapping *nd_mapping, resource_size_t *overlap);
+resource_size_t nd_blk_available_dpa(struct nd_mapping *nd_mapping);
 resource_size_t nd_region_available_dpa(struct nd_region *nd_region);
 struct resource *nd_dimm_allocate_dpa(struct nd_dimm_drvdata *ndd,
 		struct nd_label_id *label_id, resource_size_t start,
 		resource_size_t n);
 resource_size_t nd_dimm_allocated_dpa(struct nd_dimm_drvdata *ndd,
 		struct nd_label_id *label_id);
+struct nd_mapping;
+struct resource *nsblk_add_resource(struct nd_region *nd_region,
+		struct nd_dimm_drvdata *ndd, struct nd_namespace_blk *nsblk,
+		resource_size_t start);
 #endif /* __ND_PRIVATE_H__ */
