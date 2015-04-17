@@ -538,6 +538,12 @@ static noinline struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 	if (nd_region->id < 0) {
 		kfree(nd_region);
 		return NULL;
+	} else if (nd_region->id >= CONFIG_ND_MAX_REGIONS) {
+		dev_err(&nd_bus->dev, "max region limit %d reached\n",
+				CONFIG_ND_MAX_REGIONS);
+		ida_simple_remove(&region_ida, nd_region->id);
+		kfree(nd_region);
+		return NULL;
 	}
 
 	memcpy(nd_region->mapping, ndr_desc->nd_mapping,
@@ -551,6 +557,7 @@ static noinline struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 	nd_region->ndr_mappings = ndr_desc->num_mappings;
 	nd_region->provider_data = ndr_desc->provider_data;
 	nd_region->nd_set = ndr_desc->nd_set;
+	nd_region->num_lanes = ndr_desc->num_lanes;
 	ida_init(&nd_region->ns_ida);
 	dev = &nd_region->dev;
 	dev_set_name(dev, "region%d", nd_region->id);
@@ -567,6 +574,7 @@ static noinline struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 struct nd_region *nd_pmem_region_create(struct nd_bus *nd_bus,
 		struct nd_region_desc *ndr_desc)
 {
+	ndr_desc->num_lanes = ND_MAX_LANES;
 	return nd_region_create(nd_bus, ndr_desc, &nd_pmem_device_type);
 }
 EXPORT_SYMBOL_GPL(nd_pmem_region_create);
@@ -576,6 +584,7 @@ struct nd_region *nd_blk_region_create(struct nd_bus *nd_bus,
 {
 	if (ndr_desc->num_mappings > 1)
 		return NULL;
+	ndr_desc->num_lanes = min(ndr_desc->num_lanes, ND_MAX_LANES);
 	return nd_region_create(nd_bus, ndr_desc, &nd_blk_device_type);
 }
 EXPORT_SYMBOL_GPL(nd_blk_region_create);
@@ -583,6 +592,7 @@ EXPORT_SYMBOL_GPL(nd_blk_region_create);
 struct nd_region *nd_volatile_region_create(struct nd_bus *nd_bus,
 		struct nd_region_desc *ndr_desc)
 {
+	ndr_desc->num_lanes = ND_MAX_LANES;
 	return nd_region_create(nd_bus, ndr_desc, &nd_volatile_device_type);
 }
 EXPORT_SYMBOL_GPL(nd_volatile_region_create);

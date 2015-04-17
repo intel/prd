@@ -926,6 +926,7 @@ static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
 			} else {
 				nd_mapping->size = nfit_mem->bdw->blk_capacity;
 				nd_mapping->start = nfit_mem->bdw->blk_offset;
+				ndr_desc.num_lanes = nfit_mem->bdw->num_bdw;
 			}
 
 			ndr_desc.nd_mapping = nd_mapping;

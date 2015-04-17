@@ -22,6 +22,12 @@
 #include "label.h"
 
 enum {
+	/*
+	 * Limits the maximum number of block apertures a dimm can
+	 * support and is an input to the geometry/on-disk-format of a
+	 * BTT instance
+	 */
+	ND_MAX_LANES = 256,
 	SECTOR_SHIFT = 9,
 };
 
@@ -101,7 +107,7 @@ struct nd_region {
 	u16 ndr_mappings;
 	u64 ndr_size;
 	u64 ndr_start;
-	int id;
+	int id, num_lanes;
 	void *provider_data;
 	struct nd_interleave_set *nd_set;
 	struct nd_mapping mapping[0];
@@ -226,6 +232,8 @@ struct nd_btt *to_nd_btt(struct device *dev);
 struct btt_sb;
 u64 nd_btt_sb_checksum(struct btt_sb *btt_sb);
 struct nd_region *to_nd_region(struct device *dev);
+unsigned int nd_region_acquire_lane(struct nd_region *nd_region);
+void nd_region_release_lane(struct nd_region *nd_region, unsigned int lane);
 int nd_region_to_namespace_type(struct nd_region *nd_region);
 int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
 u64 nd_region_interleave_set_cookie(struct nd_region *nd_region);

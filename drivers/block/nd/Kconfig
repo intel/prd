@@ -93,9 +93,25 @@ config BLK_DEV_PMEM
 	  capable of DAX (direct-access) file system mappings.  See
 	  Documentation/blockdev/nd.txt for more details.
 
-	  Say Y if you want to use a NVDIMM described by NFIT
+	  Say Y if you want to use a NVDIMM described by ACPI, E820, etc...
 
 config ND_BTT_DEVS
-	def_bool y
+	bool
+
+config ND_BTT
+	tristate "BTT: Block Translation Table (atomic sector updates)"
+	depends on LIBND 
+	default LIBND
+	select ND_BTT_DEVS
+
+config ND_MAX_REGIONS
+	int "Maximum number of regions supported by the sub-system"
+	default 64
+	---help---
+	  A 'region' corresponds to an individual DIMM or an interleave
+	  set of DIMMs.  A typical maximally configured system may have
+	  up to 32 DIMMs.
+
+	  Leave the default of 64 if you are unsure.
 
 endif

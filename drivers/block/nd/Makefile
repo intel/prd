@@ -17,12 +17,15 @@ obj-$(CONFIG_ND_ACPI) += nd_acpi.o
 obj-$(CONFIG_ND_E820) += nd_e820.o
 obj-$(CONFIG_NFIT_TEST) += test/
 obj-$(CONFIG_BLK_DEV_PMEM) += nd_pmem.o
+obj-$(CONFIG_ND_BTT) += nd_btt.o
 
 nd_acpi-y := acpi.o
 
 nd_e820-y := e820.o
 
 nd_pmem-y := pmem.o
+
+nd_btt-y := btt.o
 
 libnd-y := core.o
 libnd-y += bus.o
