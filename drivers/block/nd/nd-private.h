@@ -31,6 +31,11 @@ enum {
 	DPA_RESOURCE_ADJUSTED = 1 << 0,
 };
 
+struct block_device;
+struct nd_io_claim;
+struct nd_btt;
+struct nd_io;
+
 /*
  * List manipulation is protected by nd_bus_list_mutex, except for the
  * deferred probe tracking list which nests under instances where
@@ -46,10 +51,12 @@ struct nd_bus {
 	struct list_head spas;
 	struct list_head dcrs;
 	struct list_head bdws;
+	struct list_head ndios;
 	struct list_head list;
 	struct device dev;
 	int id, probe_active;
 	struct mutex reconfig_mutex;
+	struct nd_btt *nd_btt;
 };
 
 struct nd_dimm {
@@ -100,12 +107,32 @@ struct nd_mem {
 	struct list_head list;
 };
 
+struct nd_io *ndio_lookup(struct nd_bus *nd_bus, const char *diskname);
 const char *spa_type_name(u16 type);
 int nfit_spa_type(struct nfit_spa __iomem *nfit_spa);
 struct nd_dimm *nd_dimm_by_handle(struct nd_bus *nd_bus, u32 nfit_handle);
 bool is_nd_dimm(struct device *dev);
 bool is_nd_blk(struct device *dev);
 bool is_nd_pmem(struct device *dev);
+#if IS_ENABLED(CONFIG_ND_BTT_DEVS)
+bool is_nd_btt(struct device *dev);
+struct nd_btt *nd_btt_create(struct nd_bus *nd_bus);
+void nd_btt_notify_ndio(struct nd_bus *nd_bus, struct nd_io *ndio);
+#else
+static inline bool is_nd_btt(struct device *dev)
+{
+	return false;
+}
+
+static inline struct nd_btt *nd_btt_create(struct nd_bus *nd_bus)
+{
+	return NULL;
+}
+
+static inline void nd_btt_notify_ndio(struct nd_bus *nd_bus, struct nd_io *ndio)
+{
+}
+#endif
 struct nd_bus *to_nd_bus(struct device *dev);
 struct nd_dimm *to_nd_dimm(struct device *dev);
 struct nd_bus *walk_to_nd_bus(struct device *nd_dev);
@@ -127,6 +154,7 @@ void nd_bus_destroy_ndctl(struct nd_bus *nd_bus);
 int nd_bus_register_dimms(struct nd_bus *nd_bus);
 int nd_bus_register_regions(struct nd_bus *nd_bus);
 int nd_bus_init_interleave_sets(struct nd_bus *nd_bus);
+void __nd_device_register(struct device *dev);
 int nd_match_dimm(struct device *dev, void *data);
 struct nd_label_id;
 char *nd_label_gen_id(struct nd_label_id *label_id, u8 *uuid, u32 flags);
