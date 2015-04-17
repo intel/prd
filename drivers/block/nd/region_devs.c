@@ -22,6 +22,72 @@
 
 #include <asm-generic/io-64-nonatomic-lo-hi.h>
 
+static struct {
+	struct {
+		int count[CONFIG_ND_MAX_REGIONS];
+		spinlock_t lock[CONFIG_ND_MAX_REGIONS];
+	} lane[NR_CPUS];
+} nd_percpu_lane;
+
+static void nd_region_init_locks(void)
+{
+	int i, j;
+
+	for (i = 0; i < NR_CPUS; i++)
+		for (j = 0; j < CONFIG_ND_MAX_REGIONS; j++)
+			spin_lock_init(&nd_percpu_lane.lane[i].lock[j]);
+}
+
+/**
+ * nd_region_acquire_lane - allocate and lock a lane
+ * @nd_region: region id and number of lanes possible
+ *
+ * A lane correlates to a BLK-data-window and/or a log slot in the BTT.
+ * We optimize for the common case where there are 256 lanes, one
+ * per-cpu.  For larger systems we need to lock to share lanes.  For now
+ * this implementation assumes the cost of maintaining an allocator for
+ * free lanes is on the order of the lock hold time, so it implements a
+ * static lane = cpu % num_lanes mapping.
+ *
+ * In the case of a BTT instance on top of a BLK namespace a lane may be
+ * acquired recursively.  We lock on the first instance.
+ *
+ * In the case of a BTT instance on top of PMEM, we only acquire a lane
+ * for the BTT metadata updates.
+ */
+unsigned int nd_region_acquire_lane(struct nd_region *nd_region)
+{
+	unsigned int cpu, lane;
+
+	cpu = get_cpu();
+
+	if (nd_region->num_lanes < NR_CPUS) {
+		unsigned int id = nd_region->id;
+
+		lane = cpu % nd_region->num_lanes;
+		if (nd_percpu_lane.lane[cpu].count[id]++ == 0)
+			spin_lock(&nd_percpu_lane.lane[lane].lock[id]);
+	} else
+		lane = cpu;
+
+	return lane;
+}
+EXPORT_SYMBOL(nd_region_acquire_lane);
+
+void nd_region_release_lane(struct nd_region *nd_region, unsigned int lane)
+{
+	if (nd_region->num_lanes < NR_CPUS) {
+		unsigned int cpu = get_cpu();
+		unsigned int id = nd_region->id;
+
+		if (--nd_percpu_lane.lane[cpu].count[id] == 0)
+			spin_unlock(&nd_percpu_lane.lane[lane].lock[id]);
+		put_cpu();
+	}
+	put_cpu();
+}
+EXPORT_SYMBOL(nd_region_release_lane);
+
 static DEFINE_IDA(region_ida);
 
 static void nd_region_release(struct device *dev)
@@ -679,6 +745,8 @@ static void nd_blk_init(struct nd_bus *nd_bus, struct nd_region *nd_region,
 	}
 
 	nd_region->ndr_mappings = 1;
+	nd_region->num_lanes = min_t(unsigned short,
+			readw(&nd_mem->nfit_bdw->num_bdw), ND_MAX_LANES);
 	nd_mapping = &nd_region->mapping[0];
 	nd_mapping->nd_dimm = nd_dimm;
 	nd_mapping->size = readq(&nd_mem->nfit_bdw->blk_capacity);
@@ -692,6 +760,7 @@ static void nd_spa_range_init(struct nd_bus *nd_bus, struct nd_region *nd_region
 	struct nd_spa *nd_spa = nd_region->nd_spa;
 	u16 spa_index = readw(&nd_spa->nfit_spa->spa_index);
 
+	nd_region->num_lanes = ND_MAX_LANES;
 	nd_region->dev.type = type;
 	for (i = 0; i < nd_region->ndr_mappings; i++) {
 		struct nd_memdev *nd_memdev = nd_memdev_from_spa(nd_bus,
@@ -736,6 +805,12 @@ static struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 	if (nd_region->id < 0) {
 		kfree(nd_region);
 		return NULL;
+	} else if (nd_region->id >= CONFIG_ND_MAX_REGIONS) {
+		dev_err(&nd_bus->dev, "max region limit %d reached\n",
+				CONFIG_ND_MAX_REGIONS);
+		ida_simple_remove(&region_ida, nd_region->id);
+		kfree(nd_region);
+		return NULL;
 	}
 	nd_region->nd_spa = nd_spa;
 	nd_region->ndr_mappings = num_mappings;
@@ -768,6 +843,8 @@ int nd_bus_register_regions(struct nd_bus *nd_bus)
 {
 	struct nd_spa *nd_spa;
 	int rc = 0;
+
+	nd_region_init_locks();
 
 	mutex_lock(&nd_bus_list_mutex);
 	list_for_each_entry(nd_spa, &nd_bus->spas, list) {

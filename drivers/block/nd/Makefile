@@ -17,6 +17,7 @@ endif
 obj-$(CONFIG_ND_CORE) += nd.o
 obj-$(CONFIG_NFIT_ACPI) += nd_acpi.o
 obj-$(CONFIG_BLK_DEV_PMEM) += nd_pmem.o
+obj-$(CONFIG_ND_BTT) += nd_btt.o
 
 nd_acpi-y := acpi.o
 
@@ -32,3 +33,4 @@ nd-y += label.o
 nd-$(CONFIG_ND_BTT_DEVS) += btt_devs.o
 
 nd_pmem-y := pmem.o
+nd_btt-y := btt.o

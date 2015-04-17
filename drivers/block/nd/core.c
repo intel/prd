@@ -149,6 +149,7 @@ u64 nd_fletcher64(void __iomem *addr, size_t len)
 
 	return hi32 << 32 | lo32;
 }
+EXPORT_SYMBOL(nd_fletcher64);
 
 static void nd_bus_release(struct device *dev)
 {
