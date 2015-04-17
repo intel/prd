@@ -159,6 +159,7 @@ static void nd_bus_release(struct device *dev)
 	struct nd_mem *nd_mem, *_mem;
 	struct nd_dcr *nd_dcr, *_dcr;
 	struct nd_bdw *nd_bdw, *_bdw;
+	struct nd_idt *nd_idt, *_idt;
 
 	list_for_each_entry_safe(nd_spa, _spa, &nd_bus->spas, list) {
 		list_del_init(&nd_spa->list);
@@ -176,6 +177,10 @@ static void nd_bus_release(struct device *dev)
 	list_for_each_entry_safe(nd_memdev, _memdev, &nd_bus->memdevs, list) {
 		list_del_init(&nd_memdev->list);
 		kfree(nd_memdev);
+	}
+	list_for_each_entry_safe(nd_idt, _idt, &nd_bus->idts, list) {
+		list_del_init(&nd_idt->list);
+		kfree(nd_idt);
 	}
 	list_for_each_entry_safe(nd_mem, _mem, &nd_bus->dimms, list) {
 		list_del_init(&nd_mem->list);
@@ -427,7 +432,9 @@ static void *nd_bus_new(struct device *parent,
 		return NULL;
 	INIT_LIST_HEAD(&nd_bus->spas);
 	INIT_LIST_HEAD(&nd_bus->dcrs);
+	INIT_LIST_HEAD(&nd_bus->idts);
 	INIT_LIST_HEAD(&nd_bus->bdws);
+	INIT_LIST_HEAD(&nd_bus->spa_maps);
 	INIT_LIST_HEAD(&nd_bus->memdevs);
 	INIT_LIST_HEAD(&nd_bus->dimms);
 	INIT_LIST_HEAD(&nd_bus->ndios);
@@ -436,6 +443,7 @@ static void *nd_bus_new(struct device *parent,
 	INIT_RADIX_TREE(&nd_bus->dimm_radix, GFP_KERNEL);
 	nd_bus->id = ida_simple_get(&nd_ida, 0, 0, GFP_KERNEL);
 	mutex_init(&nd_bus->reconfig_mutex);
+	mutex_init(&nd_bus->spa_map_mutex);
 	if (nd_bus->id < 0) {
 		kfree(nd_bus);
 		return NULL;
@@ -574,10 +582,21 @@ static void __iomem *add_table(struct nd_bus *nd_bus, void __iomem *table,
 				readw(&nfit_bdw->num_bdw));
 		break;
 	}
-	/* TODO */
-	case NFIT_TABLE_IDT:
-		dev_dbg(&nd_bus->dev, "%s: idt\n", __func__);
+	case NFIT_TABLE_IDT: {
+		struct nd_idt *nd_idt = kzalloc(sizeof(*nd_idt), GFP_KERNEL);
+		struct nfit_idt __iomem *nfit_idt = table;
+
+		if (!nd_idt)
+			goto err;
+		INIT_LIST_HEAD(&nd_idt->list);
+		nd_idt->nfit_idt = nfit_idt;
+		list_add_tail(&nd_idt->list, &nd_bus->idts);
+		dev_dbg(&nd_bus->dev, "%s: idt index: %d num_lines: %d\n", __func__,
+				readw(&nfit_idt->idt_index),
+				readl(&nfit_idt->num_lines));
 		break;
+	}
+	/* TODO */
 	case NFIT_TABLE_FLUSH:
 		dev_dbg(&nd_bus->dev, "%s: flush\n", __func__);
 		break;
@@ -632,8 +651,11 @@ static void nd_mem_add(struct nd_bus *nd_bus, struct nd_mem *nd_mem)
 {
 	u16 dcr_index = readw(&nd_mem->nfit_mem_dcr->dcr_index);
 	u16 spa_index = readw(&nd_mem->nfit_spa_dcr->spa_index);
+	struct nd_memdev *nd_memdev;
 	struct nd_dcr *nd_dcr;
 	struct nd_bdw *nd_bdw;
+	struct nd_idt *nd_idt;
+	u16 idt_index;
 
 	list_for_each_entry(nd_dcr, &nd_bus->dcrs, list) {
 		if (readw(&nd_dcr->nfit_dcr->dcr_index) != dcr_index)
@@ -667,6 +689,26 @@ static void nd_mem_add(struct nd_bus *nd_bus, struct nd_mem *nd_mem)
 		return;
 
 	nd_mem_find_spa_bdw(nd_bus, nd_mem);
+
+	if (!nd_mem->nfit_spa_bdw)
+		return;
+
+	spa_index = readw(&nd_mem->nfit_spa_bdw->spa_index);
+
+	list_for_each_entry(nd_memdev, &nd_bus->memdevs, list) {
+		if (readw(&nd_memdev->nfit_mem->spa_index) != spa_index ||
+		    readw(&nd_memdev->nfit_mem->dcr_index) != dcr_index)
+			continue;
+		nd_mem->nfit_mem_bdw = nd_memdev->nfit_mem;
+		idt_index = readw(&nd_memdev->nfit_mem->idt_index);
+		list_for_each_entry(nd_idt, &nd_bus->idts, list) {
+			if (readw(&nd_idt->nfit_idt->idt_index) != idt_index)
+				continue;
+			nd_mem->nfit_idt_bdw = nd_idt->nfit_idt;
+			break;
+		}
+		break;
+	}
 }
 
 static int nd_mem_cmp(void *priv, struct list_head *__a, struct list_head *__b)
@@ -700,7 +742,9 @@ static int nd_mem_init(struct nd_bus *nd_bus)
 		int type = nfit_spa_type(nd_spa->nfit_spa);
 		struct nd_mem *nd_mem, *found;
 		struct nd_memdev *nd_memdev;
+		struct nd_idt *nd_idt;
 		u16 dcr_index;
+		u16 idt_index;
 
 		if (type != NFIT_SPA_DCR)
 			continue;
@@ -726,6 +770,13 @@ static int nd_mem_init(struct nd_bus *nd_bus)
 			INIT_LIST_HEAD(&nd_mem->list);
 			nd_mem->nfit_spa_dcr = nd_spa->nfit_spa;
 			nd_mem->nfit_mem_dcr = nd_memdev->nfit_mem;
+			idt_index = readw(&nd_memdev->nfit_mem->idt_index);
+			list_for_each_entry(nd_idt, &nd_bus->idts, list) {
+				if (readw(&nd_idt->nfit_idt->idt_index) != idt_index)
+					continue;
+				nd_mem->nfit_idt_dcr = nd_idt->nfit_idt;
+				break;
+			}
 			nd_mem_add(nd_bus, nd_mem);
 		}
 	}

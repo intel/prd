@@ -17,17 +17,27 @@
 #include <linux/types.h>
 #include <linux/io.h>
 #include "nfit_test.h"
+#include "../nd.h"
 
 static LIST_HEAD(iomap_head);
 
 static struct iomap_ops {
 	nfit_test_lookup_fn nfit_test_lookup;
+	nfit_test_acquire_lane_fn nfit_test_acquire_lane;
+	nfit_test_release_lane_fn nfit_test_release_lane;
+	nfit_test_blk_do_io_fn nfit_test_blk_do_io;
 	struct list_head list;
 } iomap_ops;
 
-void nfit_test_setup(nfit_test_lookup_fn lookup)
+void nfit_test_setup(nfit_test_lookup_fn lookup,
+		nfit_test_acquire_lane_fn acquire_lane,
+		nfit_test_release_lane_fn release_lane,
+		nfit_test_blk_do_io_fn blk_do_io)
 {
 	iomap_ops.nfit_test_lookup = lookup;
+	iomap_ops.nfit_test_acquire_lane = acquire_lane;
+	iomap_ops.nfit_test_release_lane = release_lane;
+	iomap_ops.nfit_test_blk_do_io = blk_do_io;
 	INIT_LIST_HEAD(&iomap_ops.list);
 	list_add_rcu(&iomap_ops.list, &iomap_head);
 }
@@ -144,5 +154,46 @@ void __wrap___release_region(struct resource *parent, resource_size_t start,
 		__release_region(parent, start, n);
 }
 EXPORT_SYMBOL(__wrap___release_region);
+
+int __wrap_nd_blk_do_io(struct nd_blk_window *ndbw, void *iobuf,
+		unsigned int len, int rw, resource_size_t dpa)
+{
+	struct nd_region *nd_region = ndbw_to_region(ndbw);
+	struct nd_blk_mmio *mmio = &ndbw->mmio[BDW];
+	struct nfit_test_resource *nfit_res;
+	struct iomap_ops *ops;
+	int rc = 0;
+
+	rcu_read_lock();
+	ops = list_first_or_null_rcu(&iomap_head, typeof(*ops), list);
+	nfit_res = ops ? ops->nfit_test_lookup((unsigned long) mmio->base) : NULL;
+	if (nfit_res) {
+		unsigned int bw;
+
+		dev_vdbg(&nd_region->dev, "%s: base: %p offset: %pa\n",
+				__func__, mmio->base, &dpa);
+		bw = ops->nfit_test_acquire_lane(nd_region);
+		if (rw)
+			memcpy(nfit_res->buf + dpa, iobuf, len);
+		else
+			memcpy(iobuf, nfit_res->buf + dpa, len);
+		ops->nfit_test_release_lane(nd_region, bw);
+	} else if (ops) {
+		rc = ops->nfit_test_blk_do_io(ndbw, iobuf, len, rw, dpa);
+	} else {
+		/*
+		 * We can't call nd_blk_do_io() directly here as it would
+		 * create a circular dependency.  nfit_test must remain loaded
+		 * to maintain nfit_test_blk_do_io() => nd_blk_do_io().
+		 */
+		dev_WARN_ONCE(&nd_region->dev, 1,
+				"load nfit_test.ko or disable CONFIG_NFIT_TEST\n");
+		rc = -EIO;
+	}
+	rcu_read_unlock();
+
+	return rc;
+}
+EXPORT_SYMBOL(__wrap_nd_blk_do_io);
 
 MODULE_LICENSE("GPL v2");

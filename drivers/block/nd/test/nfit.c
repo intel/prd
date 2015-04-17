@@ -949,7 +949,8 @@ static __init int nfit_test_init(void)
 		return -EINVAL;
 	}
 
-	nfit_test_setup(nfit_test_lookup);
+	nfit_test_setup(nfit_test_lookup, nd_region_acquire_lane,
+			nd_region_release_lane, nd_blk_do_io);
 
 	for (i = 0; i < NUM_NFITS; i++) {
 		struct nfit_test *nfit_test;

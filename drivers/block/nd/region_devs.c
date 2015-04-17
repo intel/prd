@@ -11,6 +11,7 @@
  * General Public License for more details.
  */
 #include <linux/scatterlist.h>
+#include <linux/highmem.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/sort.h>
@@ -542,29 +543,148 @@ u64 nd_region_interleave_set_cookie(struct nd_region *nd_region)
 	return 0;
 }
 
+static void nd_spa_mapping_release(struct kref *kref)
+{
+	struct nd_spa_mapping *spa_map = to_spa_map(kref);
+	struct nfit_spa __iomem *nfit_spa = spa_map->nfit_spa;
+	struct nd_bus *nd_bus = spa_map->nd_bus;
+
+	WARN_ON(!mutex_is_locked(&nd_bus->spa_map_mutex));
+	dev_dbg(&nd_bus->dev, "%s: SPA%d\n", __func__,
+			readw(&nfit_spa->spa_index));
+	iounmap(spa_map->spa);
+	release_mem_region(readq(&nfit_spa->spa_base),
+			readq(&nfit_spa->spa_length));
+	list_del(&spa_map->list);
+	kfree(spa_map);
+}
+
+static struct nd_spa_mapping *find_spa_mapping(struct nd_bus *nd_bus,
+		struct nfit_spa __iomem *nfit_spa)
+{
+	struct nd_spa_mapping *spa_map;
+
+	WARN_ON(!mutex_is_locked(&nd_bus->spa_map_mutex));
+	list_for_each_entry(spa_map, &nd_bus->spa_maps, list)
+		if (spa_map->nfit_spa == nfit_spa)
+			return spa_map;
+
+	return NULL;
+}
+
+static void nd_spa_unmap(struct nd_bus *nd_bus, struct nfit_spa __iomem *nfit_spa)
+{
+	struct nd_spa_mapping *spa_map;
+
+	mutex_lock(&nd_bus->spa_map_mutex);
+	spa_map = find_spa_mapping(nd_bus, nfit_spa);
+
+	if (spa_map)
+		kref_put(&spa_map->kref, nd_spa_mapping_release);
+	mutex_unlock(&nd_bus->spa_map_mutex);
+}
+
+static void *__nd_spa_map(struct nd_bus *nd_bus, struct nfit_spa __iomem *nfit_spa)
+{
+	resource_size_t start = readq(&nfit_spa->spa_base);
+	resource_size_t n = readq(&nfit_spa->spa_length);
+	struct nd_spa_mapping *spa_map;
+	struct resource *res;
+
+	WARN_ON(!mutex_is_locked(&nd_bus->spa_map_mutex));
+
+	spa_map = find_spa_mapping(nd_bus, nfit_spa);
+	if (spa_map) {
+		kref_get(&spa_map->kref);
+		return spa_map->spa;
+	}
+
+	spa_map = kzalloc(sizeof(*spa_map), GFP_KERNEL);
+	if (!spa_map)
+		return NULL;
+
+	INIT_LIST_HEAD(&spa_map->list);
+	spa_map->nfit_spa = nfit_spa;
+	kref_init(&spa_map->kref);
+	spa_map->nd_bus = nd_bus;
+
+	res = request_mem_region(start, n, dev_name(&nd_bus->dev));
+	if (!res)
+		goto err_mem;
+
+	/* TODO: cacheability based on the spa type */
+	spa_map->spa = ioremap_nocache(start, n);
+	if (!spa_map->spa)
+		goto err_map;
+
+	list_add_tail(&spa_map->list, &nd_bus->spa_maps);
+	return spa_map->spa;
+
+ err_map:
+	release_mem_region(start, n);
+ err_mem:
+	kfree(spa_map);
+	return NULL;
+}
+
+/**
+ * nd_spa_map - nd core managed mappings of NFIT_SPA_DCR and NFIT_SPA_BDW ranges
+ * @nd_bus: NFIT-bus that provided the spa table entry
+ * @nfit_spa: spa table to map
+ *
+ * In the case where block-data-window apertures and
+ * dimm-control-regions are interleaved they will end up sharing a
+ * single request_mem_region() + ioremap() for the address range.  In
+ * the style of devm nd_spa_map() mappings are automatically dropped
+ * when all region devices referencing the same mapping are disabled /
+ * unbound.
+ */
+static void *nd_spa_map(struct nd_bus *nd_bus, struct nfit_spa __iomem *nfit_spa)
+{
+	struct nd_spa_mapping *spa_map;
+
+	mutex_lock(&nd_bus->spa_map_mutex);
+	spa_map = __nd_spa_map(nd_bus, nfit_spa);
+	mutex_unlock(&nd_bus->spa_map_mutex);
+
+	return spa_map;
+}
+
 /*
  * Upon successful probe/remove, take/release a reference on the
- * associated interleave set (if present)
+ * associated dimms in the interleave set, on successful probe of a BLK
+ * namespace check if we need a new seed, and on remove or failed probe
+ * of a BLK region drop interleaved spa mappings.
  */
 static void nd_region_notify_driver_action(struct nd_bus *nd_bus,
 		struct device *dev, int rc, bool probe)
 {
-	if (rc)
-		return;
-
 	if (is_nd_pmem(dev) || is_nd_blk(dev)) {
 		struct nd_region *nd_region = to_nd_region(dev);
+		struct nd_blk_window *ndbw = &nd_region->bw;
 		int i;
 
 		for (i = 0; i < nd_region->ndr_mappings; i++) {
 			struct nd_mapping *nd_mapping = &nd_region->mapping[i];
 			struct nd_dimm *nd_dimm = nd_mapping->nd_dimm;
 
-			if (probe)
+			if (probe && rc == 0)
 				atomic_inc(&nd_dimm->busy);
-			else
+			else if (!probe)
 				atomic_dec(&nd_dimm->busy);
 		}
+
+		if (is_nd_pmem(dev) || (probe && rc == 0))
+			return;
+
+		/* auto-free BLK spa mappings */
+		for (i = 0; i < 2; i++) {
+			struct nd_blk_mmio *mmio = &ndbw->mmio[i];
+
+			if (mmio->base)
+				nd_spa_unmap(nd_bus, mmio->nfit_spa);
+		}
+		memset(ndbw, 0, sizeof(*ndbw));
 	} else if (dev->parent && is_nd_blk(dev->parent) && probe && rc == 0) {
 		struct nd_region *nd_region = to_nd_region(dev->parent);
 
@@ -715,6 +835,188 @@ static const struct attribute_group *nd_region_attribute_groups[] = {
 	&nd_mapping_attribute_group,
 	NULL,
 };
+
+static u64 to_interleave_offset(u64 offset, struct nd_blk_mmio *mmio)
+{
+	struct nfit_idt __iomem *nfit_idt = mmio->nfit_idt;
+	u32 sub_line_offset, line_index, line_offset;
+	u64 line_no, table_skip_count, table_offset;
+
+	line_no = div_u64_rem(offset, mmio->line_size, &sub_line_offset);
+	table_skip_count = div_u64_rem(line_no, mmio->num_lines, &line_index);
+	line_offset = readl(&nfit_idt->line_offset[line_index])
+		* mmio->line_size;
+	table_offset = table_skip_count * mmio->table_size;
+
+	return mmio->base_offset + line_offset + table_offset + sub_line_offset;
+}
+
+static u64 read_blk_stat(struct nd_blk_window *ndbw, unsigned int bw)
+{
+	struct nd_blk_mmio *mmio = &ndbw->mmio[DCR];
+	u64 offset = ndbw->stat_offset + mmio->size * bw;
+
+	if (mmio->num_lines)
+		offset = to_interleave_offset(offset, mmio);
+
+	return readq(mmio->base + offset);
+}
+
+static void write_blk_ctl(struct nd_blk_window *ndbw, unsigned int bw,
+		resource_size_t dpa, unsigned int len, unsigned int write)
+{
+	u64 cmd, offset;
+	struct nd_blk_mmio *mmio = &ndbw->mmio[DCR];
+
+	enum {
+		BCW_OFFSET_MASK = (1ULL << 48)-1,
+		BCW_LEN_SHIFT = 48,
+		BCW_LEN_MASK = (1ULL << 8) - 1,
+		BCW_CMD_SHIFT = 56,
+	};
+
+	cmd = (dpa >> L1_CACHE_SHIFT) & BCW_OFFSET_MASK;
+	len = len >> L1_CACHE_SHIFT;
+	cmd |= ((u64) len & BCW_LEN_MASK) << BCW_LEN_SHIFT;
+	cmd |= ((u64) write) << BCW_CMD_SHIFT;
+
+	offset = ndbw->cmd_offset + mmio->size * bw;
+	if (mmio->num_lines)
+		offset = to_interleave_offset(offset, mmio);
+
+	writeq(cmd, mmio->base + offset);
+	/* FIXME: conditionally perform read-back if mandated by firmware */
+}
+
+/* len is <= PAGE_SIZE by this point, so it can be done in a single BW I/O */
+int nd_blk_do_io(struct nd_blk_window *ndbw, void *iobuf, unsigned int len,
+		int write, resource_size_t dpa)
+{
+	struct nd_region *nd_region = ndbw_to_region(ndbw);
+	struct nd_blk_mmio *mmio = &ndbw->mmio[BDW];
+	unsigned int bw, copied = 0;
+	u64 base_offset;
+	int rc;
+
+	bw = nd_region_acquire_lane(nd_region);
+	base_offset = ndbw->bdw_offset + dpa % L1_CACHE_BYTES + bw * mmio->size;
+	/* TODO: non-temporal access, flush hints, cache management etc... */
+	write_blk_ctl(ndbw, bw, dpa, len, write);
+	while (len) {
+		unsigned int c;
+		u64 offset;
+
+		if (mmio->num_lines) {
+			u32 line_offset;
+
+			offset = to_interleave_offset(base_offset + copied,
+					mmio);
+			div_u64_rem(offset, mmio->line_size, &line_offset);
+			c = min(len, mmio->line_size - line_offset);
+		} else {
+			offset = base_offset + ndbw->bdw_offset;
+			c = len;
+		}
+
+		if (write)
+			memcpy(mmio->base + offset, iobuf + copied, c);
+		else
+			memcpy(iobuf + copied, mmio->base + offset, c);
+
+		len -= c;
+		copied += c;
+	}
+	rc = read_blk_stat(ndbw, bw) ? -EIO : 0;
+	nd_region_release_lane(nd_region, bw);
+
+	return rc;
+}
+EXPORT_SYMBOL(nd_blk_do_io);
+
+static int nd_blk_init_interleave(struct nd_blk_mmio *mmio,
+		struct nfit_idt __iomem *nfit_idt, u16 interleave_ways)
+{
+	if (nfit_idt) {
+		mmio->num_lines = readl(&nfit_idt->num_lines);
+		mmio->line_size = readl(&nfit_idt->line_size);
+		if (interleave_ways == 0)
+			return -ENXIO;
+		mmio->table_size = mmio->num_lines * interleave_ways
+			* mmio->line_size;
+	}
+
+	return 0;
+}
+
+int nd_blk_init_region(struct nd_region *nd_region)
+{
+	struct nd_bus *nd_bus = walk_to_nd_bus(&nd_region->dev);
+	struct nd_blk_window *ndbw = &nd_region->bw;
+	struct nd_mapping *nd_mapping;
+	struct nd_blk_mmio *mmio;
+	struct nd_dimm *nd_dimm;
+	struct nd_mem *nd_mem;
+	int rc;
+
+	if (!is_nd_blk(&nd_region->dev))
+		return 0;
+
+	/* FIXME: use nfit values rather than hard coded */
+	if (nd_region->ndr_mappings != 1)
+		return -ENXIO;
+
+	nd_mapping = &nd_region->mapping[0];
+	nd_dimm = nd_mapping->nd_dimm;
+	nd_mem = nd_dimm->nd_mem;
+	if (!nd_mem->nfit_dcr || !nd_mem->nfit_bdw)
+		return -ENXIO;
+
+	/* map block aperture memory */
+	ndbw->bdw_offset = readq(&nd_mem->nfit_bdw->bdw_offset);
+	mmio = &ndbw->mmio[BDW];
+	mmio->base = nd_spa_map(nd_bus, nd_mem->nfit_spa_bdw);
+	if (!mmio->base)
+		return -ENOMEM;
+	mmio->size = readq(&nd_mem->nfit_bdw->bdw_size);
+	mmio->base_offset = readq(&nd_mem->nfit_mem_bdw->region_spa_offset);
+	mmio->nfit_idt = nd_mem->nfit_idt_bdw;
+	mmio->nfit_spa = nd_mem->nfit_spa_bdw;
+	rc = nd_blk_init_interleave(mmio, nd_mem->nfit_idt_bdw,
+			readw(&nd_mem->nfit_mem_bdw->interleave_ways));
+	if (rc)
+		return rc;
+
+	/* map block control memory */
+	ndbw->cmd_offset = readq(&nd_mem->nfit_dcr->cmd_offset);
+	ndbw->stat_offset = readq(&nd_mem->nfit_dcr->status_offset);
+	mmio = &ndbw->mmio[DCR];
+	mmio->base = nd_spa_map(nd_bus, nd_mem->nfit_spa_dcr);
+	if (!mmio->base)
+		return -ENOMEM;
+	mmio->size = readq(&nd_mem->nfit_dcr->bcw_size);
+	mmio->base_offset = readq(&nd_mem->nfit_mem_dcr->region_spa_offset);
+	mmio->nfit_idt = nd_mem->nfit_idt_dcr;
+	mmio->nfit_spa = nd_mem->nfit_spa_dcr;
+	rc = nd_blk_init_interleave(mmio, nd_mem->nfit_idt_dcr,
+			readw(&nd_mem->nfit_mem_dcr->interleave_ways));
+	if (rc)
+		return rc;
+
+	if (mmio->line_size == 0)
+		return 0;
+
+	if ((u32) ndbw->cmd_offset % mmio->line_size + 8 > mmio->line_size) {
+		dev_err(&nd_region->dev,
+				"cmd_offset crosses interleave boundary\n");
+		return -ENXIO;
+	} else if ((u32) ndbw->stat_offset % mmio->line_size + 8 > mmio->line_size) {
+		dev_err(&nd_region->dev,
+				"stat_offset crosses interleave boundary\n");
+		return -ENXIO;
+	}
+
+	return 0;
+}
 
 static void nd_blk_init(struct nd_bus *nd_bus, struct nd_region *nd_region,
 		struct nd_mem *nd_mem)

@@ -46,16 +46,19 @@ struct nd_bus {
 	struct radix_tree_root dimm_radix;
 	wait_queue_head_t probe_wait;
 	struct module *module;
+	struct list_head spa_maps;
 	struct list_head memdevs;
 	struct list_head dimms;
 	struct list_head spas;
 	struct list_head dcrs;
 	struct list_head bdws;
+	struct list_head idts;
 	struct list_head ndios;
 	struct list_head list;
 	struct device dev;
 	int id, probe_active;
 	struct mutex reconfig_mutex;
+	struct mutex spa_map_mutex;
 	struct nd_btt *nd_btt;
 };
 
@@ -92,6 +95,11 @@ struct nd_bdw {
 	struct list_head list;
 };
 
+struct nd_idt {
+	struct nfit_idt __iomem *nfit_idt;
+	struct list_head list;
+};
+
 struct nd_memdev {
 	struct nfit_mem __iomem *nfit_mem;
 	struct list_head list;
@@ -100,12 +108,28 @@ struct nd_memdev {
 /* assembled tables for a given dimm */
 struct nd_mem {
 	struct nfit_mem __iomem *nfit_mem_dcr;
+	struct nfit_mem __iomem *nfit_mem_bdw;
 	struct nfit_dcr __iomem *nfit_dcr;
 	struct nfit_bdw __iomem *nfit_bdw;
 	struct nfit_spa __iomem *nfit_spa_dcr;
 	struct nfit_spa __iomem *nfit_spa_bdw;
+	struct nfit_idt __iomem *nfit_idt_dcr;
+	struct nfit_idt __iomem *nfit_idt_bdw;
 	struct list_head list;
 };
+
+struct nd_spa_mapping {
+	struct nfit_spa __iomem *nfit_spa;
+	struct list_head list;
+	struct nd_bus *nd_bus;
+	struct kref kref;
+	void *spa;
+};
+
+static inline struct nd_spa_mapping *to_spa_map(struct kref *kref)
+{
+	return container_of(kref, struct nd_spa_mapping, kref);
+}
 
 struct nd_io *ndio_lookup(struct nd_bus *nd_bus, const char *diskname);
 const char *spa_type_name(u16 type);

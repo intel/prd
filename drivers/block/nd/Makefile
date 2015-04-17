@@ -12,12 +12,14 @@ ldflags-y += --wrap=ioremap_nocache
 ldflags-y += --wrap=iounmap
 ldflags-y += --wrap=__request_region
 ldflags-y += --wrap=__release_region
+ldflags-y += --wrap=nd_blk_do_io
 endif
 
 obj-$(CONFIG_ND_CORE) += nd.o
 obj-$(CONFIG_NFIT_ACPI) += nd_acpi.o
 obj-$(CONFIG_BLK_DEV_PMEM) += nd_pmem.o
 obj-$(CONFIG_ND_BTT) += nd_btt.o
+obj-$(CONFIG_ND_BLK) += nd_blk.o
 
 nd_acpi-y := acpi.o
 
@@ -34,3 +36,4 @@ nd-$(CONFIG_ND_BTT_DEVS) += btt_devs.o
 
 nd_pmem-y := pmem.o
 nd_btt-y := btt.o
+nd_blk-y := blk.o

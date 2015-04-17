@@ -106,6 +106,11 @@ static inline struct nd_namespace_label __iomem *nd_get_label(
 	for (res = (ndd)->dpa.child, next = res ? res->sibling : NULL; \
 			res; res = next, next = next ? next->sibling : NULL)
 
+enum nd_blk_mmio_selector {
+	BDW,
+	DCR,
+};
+
 struct nd_region {
 	struct device dev;
 	struct nd_spa *nd_spa;
@@ -116,6 +121,22 @@ struct nd_region {
 	u64 ndr_start;
 	int id;
 	int num_lanes;
+	/* only valid for blk regions */
+	struct nd_blk_window {
+		struct nd_blk_mmio {
+			void *base;
+			u64 size;
+			u64 base_offset;
+			u32 line_size;
+			u32 num_lines;
+			u32 table_size;
+			struct nfit_idt __iomem *nfit_idt;
+			struct nfit_spa __iomem *nfit_spa;
+		} mmio[2];
+		u64 bdw_offset; /* post interleave offset */
+		u64 stat_offset;
+		u64 cmd_offset;
+	} bw;
 	struct nd_mapping mapping[0];
 };
 
@@ -127,6 +148,11 @@ static inline unsigned nd_inc_seq(unsigned seq)
 	static const unsigned next[] = { 0, 2, 3, 1 };
 
 	return next[seq & 3];
+}
+
+static inline struct nd_region *ndbw_to_region(struct nd_blk_window *ndbw)
+{
+	return container_of(ndbw, struct nd_region, bw);
 }
 
 struct nd_io;
@@ -212,6 +238,27 @@ enum nd_async_mode {
 	ND_ASYNC,
 };
 
+/*
+ * When testing BLK I/O (with CONFIG_NFIT_TEST) we override
+ * nd_blk_do_io() and optionally route it to simulated resources.  Given
+ * circular dependencies nfit_test needs to be loaded for the BLK I/O
+ * fallback path in the case of real hardware.  See
+ * __wrap_nd_blk_do_io().
+ */
+#if IS_ENABLED(CONFIG_NFIT_TEST)
+#include <linux/kmod.h>
+
+static inline int nfit_test_blk_init(void)
+{
+	return request_module("nfit_test");
+}
+#else
+static inline int nfit_test_blk_init(void)
+{
+	return 0;
+}
+#endif
+
 void wait_nd_bus_probe_idle(struct device *dev);
 void nd_device_register(struct device *dev);
 void nd_device_unregister(struct device *dev, enum nd_async_mode mode);
@@ -248,6 +295,7 @@ u64 btt_sb_checksum(struct btt_sb *btt_sb);
 struct nd_region *to_nd_region(struct device *dev);
 unsigned int nd_region_acquire_lane(struct nd_region *nd_region);
 void nd_region_release_lane(struct nd_region *nd_region, unsigned int lane);
+int nd_blk_init_region(struct nd_region *nd_region);
 int nd_region_to_namespace_type(struct nd_region *nd_region);
 int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
 u64 nd_region_interleave_set_cookie(struct nd_region *nd_region);
@@ -256,4 +304,7 @@ void nd_bus_unlock(struct device *dev);
 bool is_nd_bus_locked(struct device *dev);
 int nd_label_reserve_dpa(struct nd_dimm_drvdata *ndd);
 void nd_dimm_free_dpa(struct nd_dimm_drvdata *ndd, struct resource *res);
+int nd_blk_do_io(struct nd_blk_window *ndbw, void *iobuf,
+		unsigned int len, int rw, resource_size_t dev_offset);
+resource_size_t nd_namespace_blk_validate(struct nd_namespace_blk *nsblk);
 #endif /* __ND_H__ */

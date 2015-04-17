@@ -70,6 +70,9 @@ config NFIT_TEST
 	  load.  Kconfig does not allow for numerical value
 	  dependencies, so we can only warn at runtime.
 
+	  Enabling this option will degrade the performance of other BLK
+	  namespaces.  Do not enable for production environments.
+
 	  Say N unless you are doing development of the 'nd' subsystem.
 
 config BLK_DEV_PMEM
@@ -86,6 +89,22 @@ config BLK_DEV_PMEM
 	  these persistent memory ranges into block devices that are
 	  capable of DAX (direct-access) file system mappings.  See
 	  Documentation/blockdev/nd.txt for more details.
+
+	  Say Y if you want to use a NVDIMM described by NFIT
+
+config ND_BLK
+	tristate "BLK: Block data window (aperture) device support"
+	depends on ND_CORE
+	default ND_CORE
+	help
+	  This driver performs I/O using a set of DCR/BDW defined
+	  apertures.  The set of apertures will all access the one
+	  DIMM.  Multiple windows allow multiple concurrent accesses,
+	  much like tagged-command-queuing, and would likely be used
+	  by different threads or different CPUs.
+
+	  The NFIT specification defines a standard format for a Block
+	  Data Window.
 
 	  Say Y if you want to use a NVDIMM described by NFIT
 
