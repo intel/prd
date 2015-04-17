@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include "nd-private.h"
 #include "libnd.h"
+#include "nd.h"
 
 LIST_HEAD(nd_bus_list);
 DEFINE_MUTEX(nd_bus_list_mutex);
@@ -96,8 +97,33 @@ static ssize_t provider_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(provider);
 
+static int flush_namespaces(struct device *dev, void *data)
+{
+	device_lock(dev);
+	device_unlock(dev);
+	return 0;
+}
+
+static int flush_regions_dimms(struct device *dev, void *data)
+{
+	device_lock(dev);
+	device_unlock(dev);
+	device_for_each_child(dev, NULL, flush_namespaces);
+	return 0;
+}
+
+static ssize_t wait_probe_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	nd_synchronize();
+	device_for_each_child(dev, NULL, flush_regions_dimms);
+	return sprintf(buf, "1\n");
+}
+static DEVICE_ATTR_RO(wait_probe);
+
 static struct attribute *nd_bus_attributes[] = {
 	&dev_attr_commands.attr,
+	&dev_attr_wait_probe.attr,
 	&dev_attr_provider.attr,
 	NULL,
 };
@@ -158,7 +184,7 @@ static int child_unregister(struct device *dev, void *data)
 	if (dev->class)
 		/* pass */;
 	else
-		device_unregister(dev);
+		nd_device_unregister(dev, ND_SYNC);
 	return 0;
 }
 
@@ -171,6 +197,7 @@ void nd_bus_unregister(struct nd_bus *nd_bus)
 	list_del_init(&nd_bus->list);
 	mutex_unlock(&nd_bus_list_mutex);
 
+	nd_synchronize();
 	device_for_each_child(&nd_bus->dev, NULL, child_unregister);
 	nd_bus_destroy_ndctl(nd_bus);
 
@@ -180,12 +207,24 @@ EXPORT_SYMBOL_GPL(nd_bus_unregister);
 
 static __init int libnd_init(void)
 {
-	return nd_bus_init();
+	int rc;
+
+	rc = nd_bus_init();
+	if (rc)
+		return rc;
+	rc = nd_dimm_init();
+	if (rc)
+		goto err_dimm;
+	return 0;
+ err_dimm:
+	nd_bus_exit();
+	return rc;
 }
 
 static __exit void libnd_exit(void)
 {
 	WARN_ON(!list_empty(&nd_bus_list));
+	nd_dimm_exit();
 	nd_bus_exit();
 }
 

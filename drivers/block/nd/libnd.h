@@ -29,6 +29,7 @@ enum {
 
 extern struct attribute_group nd_bus_attribute_group;
 extern struct attribute_group nd_dimm_attribute_group;
+extern struct attribute_group nd_device_attribute_group;
 
 struct nd_dimm;
 struct nd_bus_descriptor;
@@ -69,4 +70,5 @@ u32 nd_cmd_in_size(struct nd_dimm *nd_dimm, int cmd,
 u32 nd_cmd_out_size(struct nd_dimm *nd_dimm, int cmd,
 		const struct nd_cmd_desc *desc, int idx, const u32 *in_field,
 		const u32 *out_field);
+int nd_bus_validate_dimm_count(struct nd_bus *nd_bus, int dimm_count);
 #endif /* __LIBND_H__ */

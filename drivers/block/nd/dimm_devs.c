@@ -11,6 +11,7 @@
  * General Public License for more details.
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#include <linux/vmalloc.h>
 #include <linux/device.h>
 #include <linux/ndctl.h>
 #include <linux/slab.h>
@@ -18,8 +19,114 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include "nd-private.h"
+#include "nd.h"
 
 static DEFINE_IDA(dimm_ida);
+
+/*
+ * Retrieve bus and dimm handle and return if this bus supports
+ * get_config_data commands
+ */
+static int __validate_dimm(struct nd_dimm_drvdata *ndd)
+{
+	struct nd_dimm *nd_dimm;
+
+	if (!ndd)
+		return -EINVAL;
+
+	nd_dimm = to_nd_dimm(ndd->dev);
+
+	if (!nd_dimm->dsm_mask)
+		return -ENXIO;
+	if (!test_bit(ND_CMD_GET_CONFIG_DATA, nd_dimm->dsm_mask))
+		return -ENXIO;
+
+	return 0;
+}
+
+static int validate_dimm(struct nd_dimm_drvdata *ndd)
+{
+	int rc = __validate_dimm(ndd);
+
+	if (rc && ndd)
+		dev_dbg(ndd->dev, "%pf: %s error: %d\n",
+				__builtin_return_address(0), __func__, rc);
+	return rc;
+}
+
+/**
+ * nd_dimm_init_nsarea - determine the geometry of a dimm's namespace area
+ * @nd_dimm: dimm to initialize
+ */
+int nd_dimm_init_nsarea(struct nd_dimm_drvdata *ndd)
+{
+	struct nd_cmd_get_config_size *cmd = &ndd->nsarea;
+	struct nd_bus *nd_bus = walk_to_nd_bus(ndd->dev);
+	struct nd_bus_descriptor *nd_desc;
+	int rc = validate_dimm(ndd);
+
+	if (rc)
+		return rc;
+
+	if (cmd->config_size)
+		return 0; /* already valid */
+
+	memset(cmd, 0, sizeof(*cmd));
+	nd_desc = nd_bus->nd_desc;
+	return nd_desc->ndctl(nd_desc, to_nd_dimm(ndd->dev),
+			ND_CMD_GET_CONFIG_SIZE, cmd, sizeof(*cmd));
+}
+
+int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd)
+{
+	struct nd_bus *nd_bus = walk_to_nd_bus(ndd->dev);
+	struct nd_cmd_get_config_data_hdr *cmd;
+	struct nd_bus_descriptor *nd_desc;
+	int rc = validate_dimm(ndd);
+	u32 max_cmd_size, config_size;
+	size_t offset;
+
+	if (rc)
+		return rc;
+
+	if (ndd->data)
+		return 0;
+
+	if (ndd->nsarea.status || ndd->nsarea.max_xfer == 0)
+		return -ENXIO;
+
+	ndd->data = kmalloc(ndd->nsarea.config_size, GFP_KERNEL);
+	if (!ndd->data)
+		ndd->data = vmalloc(ndd->nsarea.config_size);
+
+	if (!ndd->data)
+		return -ENOMEM;
+
+	max_cmd_size = min_t(u32, PAGE_SIZE, ndd->nsarea.max_xfer);
+	cmd = kzalloc(max_cmd_size + sizeof(*cmd), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	nd_desc = nd_bus->nd_desc;
+	for (config_size = ndd->nsarea.config_size, offset = 0;
+			config_size; config_size -= cmd->in_length,
+			offset += cmd->in_length) {
+		cmd->in_length = min(config_size, max_cmd_size);
+		cmd->in_offset = offset;
+		rc = nd_desc->ndctl(nd_desc, to_nd_dimm(ndd->dev),
+				ND_CMD_GET_CONFIG_DATA, cmd,
+				cmd->in_length + sizeof(*cmd));
+		if (rc || cmd->status) {
+			rc = -ENXIO;
+			break;
+		}
+		memcpy(ndd->data + offset, cmd->out_buf, cmd->in_length);
+	}
+	dev_dbg(ndd->dev, "%s: len: %zd rc: %d\n", __func__, offset, rc);
+	kfree(cmd);
+
+	return rc;
+}
 
 static void nd_dimm_release(struct device *dev)
 {
@@ -111,14 +218,33 @@ struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus, void *provider_data,
 	dev_set_name(dev, "nmem%d", nd_dimm->id);
 	dev->parent = &nd_bus->dev;
 	dev->type = &nd_dimm_device_type;
-	dev->bus = &nd_bus_type;
 	dev->devt = MKDEV(nd_dimm_major, nd_dimm->id);
 	dev->groups = groups;
-	if (device_register(dev) != 0) {
-		put_device(dev);
-		return NULL;
-	}
+	nd_device_register(dev);
 
 	return nd_dimm;
 }
 EXPORT_SYMBOL_GPL(nd_dimm_create);
+
+static int count_dimms(struct device *dev, void *c)
+{
+	int *count = c;
+
+	if (is_nd_dimm(dev))
+		(*count)++;
+	return 0;
+}
+
+int nd_bus_validate_dimm_count(struct nd_bus *nd_bus, int dimm_count)
+{
+	int count = 0;
+	/* Flush any possible dimm registration failures */
+	nd_synchronize();
+
+	device_for_each_child(&nd_bus->dev, &count, count_dimms);
+	dev_dbg(&nd_bus->dev, "%s: count: %d\n", __func__, count);
+	if (count != dimm_count)
+		return -ENXIO;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(nd_bus_validate_dimm_count);

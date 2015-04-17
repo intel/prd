@@ -22,6 +22,10 @@ static bool warn_checksum;
 module_param(warn_checksum, bool, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(warn_checksum, "Turn checksum errors into warnings");
 
+static bool force_enable_dimms;
+module_param(force_enable_dimms, bool, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(force_enable_dimms, "Ignore _STA (ACPI DIMM device) status");
+
 enum {
 	NFIT_ACPI_NOTIFY_TABLE = 0x80,
 };
@@ -627,6 +631,7 @@ static struct attribute_group nd_acpi_dimm_attribute_group = {
 
 static const struct attribute_group *nd_acpi_dimm_attribute_groups[] = {
 	&nd_dimm_attribute_group,
+	&nd_device_attribute_group,
 	&nd_acpi_dimm_attribute_group,
 	NULL,
 };
@@ -663,7 +668,7 @@ static int nd_acpi_add_dimm(struct acpi_nfit_desc *acpi_desc,
 	if (!adev_dimm) {
 		dev_err(dev, "no ACPI.NFIT device with _ADR %#x, disabling...\n",
 				nfit_handle);
-		return -ENODEV;
+		return force_enable_dimms ? 0 : -ENODEV;
 	}
 
 	status = acpi_evaluate_integer(adev_dimm->handle, "_STA", NULL, &sta);
@@ -684,12 +689,13 @@ static int nd_acpi_add_dimm(struct acpi_nfit_desc *acpi_desc,
 		if (acpi_check_dsm(adev_dimm->handle, uuid, 1, 1ULL << i))
 			set_bit(i, &nfit_mem->dsm_mask);
 
-	return rc;
+	return force_enable_dimms ? 0 : rc;
 }
 
 static int nd_acpi_register_dimms(struct acpi_nfit_desc *acpi_desc)
 {
 	struct nfit_mem *nfit_mem;
+	int dimm_count = 0;
 
 	list_for_each_entry(nfit_mem, &acpi_desc->dimms, list) {
 		struct nd_dimm *nd_dimm;
@@ -723,9 +729,10 @@ static int nd_acpi_register_dimms(struct acpi_nfit_desc *acpi_desc)
 			return -ENOMEM;
 
 		nfit_mem->nd_dimm = nd_dimm;
+		dimm_count++;
 	}
 
-	return 0;
+	return nd_bus_validate_dimm_count(acpi_desc->nd_bus, dimm_count);
 }
 
 static void nd_acpi_init_dsms(struct acpi_nfit_desc *acpi_desc)

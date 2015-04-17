@@ -17,7 +17,6 @@
 
 extern struct list_head nd_bus_list;
 extern struct mutex nd_bus_list_mutex;
-extern struct bus_type nd_bus_type;
 extern int nd_dimm_major;
 
 struct nd_bus {
@@ -35,10 +34,13 @@ struct nd_dimm {
 	int id;
 };
 
-bool is_nd_dimm(struct device *dev);
 struct nd_bus *walk_to_nd_bus(struct device *nd_dev);
 int __init nd_bus_init(void);
-void __exit nd_bus_exit(void);
+void nd_bus_exit(void);
+int __init nd_dimm_init(void);
+void __exit nd_dimm_exit(void);
 int nd_bus_create_ndctl(struct nd_bus *nd_bus);
 void nd_bus_destroy_ndctl(struct nd_bus *nd_bus);
+void nd_synchronize(void);
+bool is_nd_dimm(struct device *dev);
 #endif /* __ND_PRIVATE_H__ */
