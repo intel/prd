@@ -15,6 +15,7 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/ndctl.h>
+#include <linux/types.h>
 #include "label.h"
 
 struct nd_dimm_drvdata {
@@ -54,6 +55,7 @@ static inline struct nd_namespace_index __iomem *to_next_namespace_index(
 
 struct nd_mapping {
 	struct nd_dimm *nd_dimm;
+	struct nd_namespace_label **labels;
 	u64 start;
 	u64 size;
 };
@@ -64,6 +66,30 @@ struct nd_mapping {
 		(unsigned long long) (res ? resource_size(res) : 0), \
 		(unsigned long long) (res ? res->start : 0), ##arg)
 
+/* sparse helpers */
+static inline void nd_set_label(struct nd_namespace_label **labels,
+		struct nd_namespace_label __iomem *label, int idx)
+{
+	labels[idx] = (void __force *) label;
+}
+
+static inline struct nd_namespace_label __iomem *nd_get_label(
+		struct nd_namespace_label **labels, int idx)
+{
+	struct nd_namespace_label __iomem *label = NULL;
+
+	if (labels)
+		label = (struct nd_namespace_label __iomem *) labels[idx];
+
+	return label;
+}
+
+#define for_each_label(l, label, labels) \
+	for (l = 0; (label = nd_get_label(labels, l)); l++)
+
+#define for_each_dpa_resource(ndd, res) \
+	for (res = (ndd)->dpa.child; res; res = res->sibling)
+
 #define for_each_dpa_resource_safe(ndd, res, next) \
 	for (res = (ndd)->dpa.child, next = res ? res->sibling : NULL; \
 			res; res = next, next = next ? next->sibling : NULL)
@@ -71,6 +97,7 @@ struct nd_mapping {
 struct nd_region {
 	struct device dev;
 	struct nd_spa *nd_spa;
+	struct device *ns_seed;
 	u16 ndr_mappings;
 	u64 ndr_size;
 	u64 ndr_start;
@@ -92,11 +119,15 @@ enum nd_async_mode {
 	ND_ASYNC,
 };
 
+void wait_nd_bus_probe_idle(struct device *dev);
 void nd_device_register(struct device *dev);
 void nd_device_unregister(struct device *dev, enum nd_async_mode mode);
 u64 nd_fletcher64(void __iomem *addr, size_t len);
+int nd_uuid_store(struct device *dev, u8 **uuid_out, const char *buf,
+		size_t len);
 extern struct attribute_group nd_device_attribute_group;
 struct nd_dimm;
+struct nd_dimm_drvdata *to_ndd(struct nd_mapping *nd_mapping);
 u32 to_nfit_handle(struct nd_dimm *nd_dimm);
 void *nd_dimm_get_pdata(struct nd_dimm *nd_dimm);
 void nd_dimm_set_pdata(struct nd_dimm *nd_dimm, void *data);
@@ -108,8 +139,10 @@ int nd_dimm_firmware_status(struct device *dev);
 struct nd_region *to_nd_region(struct device *dev);
 int nd_region_to_namespace_type(struct nd_region *nd_region);
 int nd_region_register_namespaces(struct nd_region *nd_region, int *err);
+u64 nd_region_interleave_set_cookie(struct nd_region *nd_region);
 void nd_bus_lock(struct device *dev);
 void nd_bus_unlock(struct device *dev);
 bool is_nd_bus_locked(struct device *dev);
 int nd_label_reserve_dpa(struct nd_dimm_drvdata *ndd);
+void nd_dimm_free_dpa(struct nd_dimm_drvdata *ndd, struct resource *res);
 #endif /* __ND_H__ */

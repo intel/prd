@@ -274,8 +274,10 @@ void nd_bus_destroy_ndctl(struct nd_bus *nd_bus)
 	device_destroy(nd_class, MKDEV(nd_bus_major, nd_bus->id));
 }
 
-static void wait_nd_bus_probe_idle(struct nd_bus *nd_bus)
+void wait_nd_bus_probe_idle(struct device *dev)
 {
+	struct nd_bus *nd_bus = walk_to_nd_bus(dev);
+
 	do {
 		if (nd_bus->probe_active == 0)
 			break;
@@ -294,7 +296,7 @@ static int nd_cmd_clear_to_send(struct nd_dimm *nd_dimm, unsigned int cmd)
 		return 0;
 
 	nd_bus = walk_to_nd_bus(&nd_dimm->dev);
-	wait_nd_bus_probe_idle(nd_bus);
+	wait_nd_bus_probe_idle(&nd_bus->dev);
 
 	if (atomic_read(&nd_dimm->busy))
 		return -EBUSY;
