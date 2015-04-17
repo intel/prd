@@ -95,4 +95,7 @@ config BLK_DEV_PMEM
 
 	  Say Y if you want to use a NVDIMM described by NFIT
 
+config ND_BTT_DEVS
+	def_bool y
+
 endif

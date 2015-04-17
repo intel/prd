@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/fcntl.h>
 #include <linux/async.h>
+#include <linux/genhd.h>
 #include <linux/ndctl.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -40,6 +41,8 @@ static int to_nd_device_type(struct device *dev)
 		return ND_DEVICE_REGION_BLK;
 	else if (is_nd_pmem(dev->parent) || is_nd_blk(dev->parent))
 		return nd_region_to_namespace_type(to_nd_region(dev->parent));
+	else if (is_nd_btt(dev))
+		return ND_DEVICE_BTT;
 
 	return 0;
 }
@@ -84,6 +87,21 @@ static int nd_bus_probe(struct device *dev)
 
 	dev_dbg(&nd_bus->dev, "%s.probe(%s) = %d\n", dev->driver->name,
 			dev_name(dev), rc);
+
+	/* check if our btt-seed has sprouted, and plant another */
+	if (rc == 0 && is_nd_btt(dev) && dev == &nd_bus->nd_btt->dev) {
+		const char *sep = "", *name = "", *status = "failed";
+
+		nd_bus->nd_btt = nd_btt_create(nd_bus);
+		if (nd_bus->nd_btt) {
+			status = "succeeded";
+			sep = ": ";
+			name = dev_name(&nd_bus->nd_btt->dev);
+		}
+		dev_dbg(&nd_bus->dev, "btt seed creation %s%s%s\n",
+				status, sep, name);
+	}
+
 	if (rc != 0)
 		module_put(provider);
 	return rc;
@@ -144,13 +162,18 @@ static void nd_async_device_unregister(void *d, async_cookie_t cookie)
 	put_device(dev);
 }
 
-void nd_device_register(struct device *dev)
+void __nd_device_register(struct device *dev)
 {
 	dev->bus = &nd_bus_type;
-	device_initialize(dev);
 	get_device(dev);
 	async_schedule_domain(nd_async_device_register, dev,
 			&nd_async_domain);
+}
+
+void nd_device_register(struct device *dev)
+{
+	device_initialize(dev);
+	__nd_device_register(dev);
 }
 EXPORT_SYMBOL(nd_device_register);
 
@@ -199,6 +222,107 @@ int __nd_driver_register(struct nd_device_driver *nd_drv, struct module *owner,
 	return driver_register(drv);
 }
 EXPORT_SYMBOL(__nd_driver_register);
+
+/**
+ * nd_register_ndio() - register byte-aligned access capability for an nd-bdev
+ * @disk: child gendisk of the ndio namepace device
+ * @ndio: initialized ndio instance to register
+ *
+ * LOCKING: hold nd_bus_lock() over the creation of ndio->disk and the
+ * subsequent nd_region_ndio event
+ */
+int nd_register_ndio(struct nd_io *ndio)
+{
+	struct nd_bus *nd_bus;
+	struct device *dev;
+
+	if (!ndio || !ndio->dev || !ndio->disk || !list_empty(&ndio->list)
+			|| !ndio->rw_bytes || !list_empty(&ndio->claims)) {
+		pr_debug("%s bad parameters from %pf\n", __func__,
+				__builtin_return_address(0));
+		return -EINVAL;
+	}
+
+	dev = ndio->dev;
+	nd_bus = walk_to_nd_bus(dev);
+	if (!nd_bus)
+		return -EINVAL;
+
+	WARN_ON_ONCE(!is_nd_bus_locked(&nd_bus->dev));
+	list_add(&ndio->list, &nd_bus->ndios);
+
+	/* TODO: generic infrastructure for 3rd party ndio claimers */
+	nd_btt_notify_ndio(nd_bus, ndio);
+
+	return 0;
+}
+EXPORT_SYMBOL(nd_register_ndio);
+
+/**
+ * __nd_unregister_ndio() - try to remove an ndio interface
+ * @ndio: interface to remove
+ */
+static int __nd_unregister_ndio(struct nd_io *ndio)
+{
+	struct nd_io_claim *ndio_claim, *_n;
+	struct nd_bus *nd_bus;
+	LIST_HEAD(claims);
+
+	nd_bus = walk_to_nd_bus(ndio->dev);
+	if (!nd_bus || list_empty(&ndio->list))
+		return -ENXIO;
+
+	spin_lock(&ndio->lock);
+	list_splice_init(&ndio->claims, &claims);
+	spin_unlock(&ndio->lock);
+
+	list_for_each_entry_safe(ndio_claim, _n, &claims, list)
+		ndio_claim->notify_remove(ndio_claim);
+
+	list_del_init(&ndio->list);
+
+	return 0;
+}
+
+int nd_unregister_ndio(struct nd_io *ndio)
+{
+	struct device *dev = ndio->dev;
+	int rc;
+
+	nd_bus_lock(dev);
+	rc = __nd_unregister_ndio(ndio);
+	nd_bus_unlock(dev);
+
+	/*
+	 * Flush in case ->notify_remove() kicked off asynchronous device
+	 * unregistration
+	 */
+	nd_synchronize();
+
+	return rc;
+}
+EXPORT_SYMBOL(nd_unregister_ndio);
+
+static struct nd_io *__ndio_lookup(struct nd_bus *nd_bus, const char *diskname)
+{
+	struct nd_io *ndio;
+
+	list_for_each_entry(ndio, &nd_bus->ndios, list)
+		if (strcmp(diskname, ndio->disk->disk_name) == 0)
+			return ndio;
+
+	return NULL;
+}
+
+struct nd_io *ndio_lookup(struct nd_bus *nd_bus, const char *diskname)
+{
+	struct nd_io *ndio;
+
+	WARN_ON_ONCE(!is_nd_bus_locked(&nd_bus->dev));
+	ndio = __ndio_lookup(nd_bus, diskname);
+
+	return ndio;
+}
 
 static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 		char *buf)

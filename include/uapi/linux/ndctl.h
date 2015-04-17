@@ -181,6 +181,7 @@ static inline const char *nd_dimm_cmd_name(unsigned cmd)
 #define ND_DEVICE_NAMESPACE_IO 4    /* legacy persistent memory */
 #define ND_DEVICE_NAMESPACE_PMEM 5  /* persistent memory namespace (may alias) */
 #define ND_DEVICE_NAMESPACE_BLK 6   /* block-data-window namespace (may alias) */
+#define ND_DEVICE_BTT 7		    /* block-translation table device */
 
 enum nd_driver_flags {
 	ND_DRIVER_DIMM            = 1 << ND_DEVICE_DIMM,
@@ -189,6 +190,7 @@ enum nd_driver_flags {
 	ND_DRIVER_NAMESPACE_IO    = 1 << ND_DEVICE_NAMESPACE_IO,
 	ND_DRIVER_NAMESPACE_PMEM  = 1 << ND_DEVICE_NAMESPACE_PMEM,
 	ND_DRIVER_NAMESPACE_BLK   = 1 << ND_DEVICE_NAMESPACE_BLK,
+	ND_DRIVER_BTT		  = 1 << ND_DEVICE_BTT,
 };
 
 enum {

@@ -32,3 +32,4 @@ libnd-y += region_devs.o
 libnd-y += region.o
 libnd-y += namespace_devs.o
 libnd-y += label.o
+libnd-$(CONFIG_ND_BTT_DEVS) += btt_devs.o

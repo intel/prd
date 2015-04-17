@@ -31,6 +31,7 @@
 struct pmem_device {
 	struct request_queue	*pmem_queue;
 	struct gendisk		*pmem_disk;
+	struct nd_io		ndio;
 
 	/* One contiguous memory region per device */
 	phys_addr_t		phys_addr;
@@ -96,6 +97,26 @@ static int pmem_rw_page(struct block_device *bdev, sector_t sector,
 
 	pmem_do_bvec(pmem, page, PAGE_CACHE_SIZE, 0, rw, sector);
 	page_endio(page, rw & WRITE, 0);
+
+	return 0;
+}
+
+static int pmem_rw_bytes(struct nd_io *ndio, void *buf, size_t offset,
+		size_t n, unsigned long flags)
+{
+	struct pmem_device *pmem = container_of(ndio, typeof(*pmem), ndio);
+	int rw = nd_data_dir(flags);
+
+	if (unlikely(offset + n > pmem->size)) {
+		dev_WARN_ONCE(ndio->dev, 1, "%s: request out of range\n",
+				__func__);
+		return -EFAULT;
+	}
+
+	if (rw == READ)
+		memcpy(buf, pmem->virt_addr + offset, n);
+	else
+		memcpy(pmem->virt_addr + offset, buf, n);
 
 	return 0;
 }
@@ -179,8 +200,6 @@ static struct pmem_device *pmem_alloc(struct device *dev, struct resource *res)
 	set_capacity(disk, pmem->size >> 9);
 	pmem->pmem_disk = disk;
 
-	add_disk(disk);
-
 	return pmem;
 
 out_free_queue:
@@ -235,7 +254,12 @@ static int nd_pmem_probe(struct device *dev)
 	if (IS_ERR(pmem))
 		return PTR_ERR(pmem);
 
+	nd_bus_lock(dev);
+	add_disk(pmem->pmem_disk);
 	dev_set_drvdata(dev, pmem);
+	nd_init_ndio(&pmem->ndio, pmem_rw_bytes, dev, pmem->pmem_disk, 0);
+	nd_register_ndio(&pmem->ndio);
+	nd_bus_unlock(dev);
 
 	return 0;
 }
@@ -244,6 +268,7 @@ static int nd_pmem_remove(struct device *dev)
 {
 	struct pmem_device *pmem = dev_get_drvdata(dev);
 
+	nd_unregister_ndio(&pmem->ndio);
 	pmem_free(pmem);
 	return 0;
 }

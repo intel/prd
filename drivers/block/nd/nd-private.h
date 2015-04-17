@@ -22,14 +22,21 @@ extern struct list_head nd_bus_list;
 extern struct mutex nd_bus_list_mutex;
 extern int nd_dimm_major;
 
+struct block_device;
+struct nd_io_claim;
+struct nd_btt;
+struct nd_io;
+
 struct nd_bus {
 	struct nd_bus_descriptor *nd_desc;
 	wait_queue_head_t probe_wait;
 	struct module *module;
+	struct list_head ndios;
 	struct list_head list;
 	struct device dev;
 	int id, probe_active;
 	struct mutex reconfig_mutex;
+	struct nd_btt *nd_btt;
 };
 
 struct nd_dimm {
@@ -41,9 +48,29 @@ struct nd_dimm {
 	int id;
 };
 
+struct nd_io *ndio_lookup(struct nd_bus *nd_bus, const char *diskname);
 bool is_nd_dimm(struct device *dev);
 bool is_nd_blk(struct device *dev);
 bool is_nd_pmem(struct device *dev);
+#if IS_ENABLED(CONFIG_ND_BTT_DEVS)
+bool is_nd_btt(struct device *dev);
+struct nd_btt *nd_btt_create(struct nd_bus *nd_bus);
+void nd_btt_notify_ndio(struct nd_bus *nd_bus, struct nd_io *ndio);
+#else
+static inline bool is_nd_btt(struct device *dev)
+{
+	return false;
+}
+
+static inline struct nd_btt *nd_btt_create(struct nd_bus *nd_bus)
+{
+	return NULL;
+}
+
+static inline void nd_btt_notify_ndio(struct nd_bus *nd_bus, struct nd_io *ndio)
+{
+}
+#endif
 struct nd_bus *walk_to_nd_bus(struct device *nd_dev);
 int __init nd_bus_init(void);
 void nd_bus_exit(void);
@@ -62,6 +89,7 @@ void nd_synchronize(void);
 int nd_bus_register_dimms(struct nd_bus *nd_bus);
 int nd_bus_register_regions(struct nd_bus *nd_bus);
 int nd_bus_init_interleave_sets(struct nd_bus *nd_bus);
+void __nd_device_register(struct device *dev);
 int nd_match_dimm(struct device *dev, void *data);
 struct nd_label_id;
 char *nd_label_gen_id(struct nd_label_id *label_id, u8 *uuid, u32 flags);
