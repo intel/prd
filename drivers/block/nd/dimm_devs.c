@@ -12,12 +12,14 @@
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/device.h>
+#include <linux/ndctl.h>
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include "nd-private.h"
 #include "nfit.h"
+#include "nd.h"
 
 static DEFINE_IDA(dimm_ida);
 
@@ -35,7 +37,7 @@ static struct device_type nd_dimm_device_type = {
 	.release = nd_dimm_release,
 };
 
-static bool is_nd_dimm(struct device *dev)
+bool is_nd_dimm(struct device *dev)
 {
 	return dev->type == &nd_dimm_device_type;
 }
@@ -66,12 +68,48 @@ static struct nfit_dcr __iomem *to_nfit_dcr(struct device *dev)
 	return nfit_dcr;
 }
 
+u32 to_nfit_handle(struct nd_dimm *nd_dimm)
+{
+	struct nfit_mem __iomem *nfit_mem = nd_dimm->nd_mem->nfit_mem_dcr;
+
+	return readl(&nfit_mem->nfit_handle);
+}
+EXPORT_SYMBOL(to_nfit_handle);
+
+void *nd_dimm_get_pdata(struct nd_dimm *nd_dimm)
+{
+	if (nd_dimm)
+		return nd_dimm->provider_data;
+	return NULL;
+}
+EXPORT_SYMBOL(nd_dimm_get_pdata);
+
+void nd_dimm_set_pdata(struct nd_dimm *nd_dimm, void *data)
+{
+	if (nd_dimm)
+		nd_dimm->provider_data = data;
+}
+EXPORT_SYMBOL(nd_dimm_set_pdata);
+
+unsigned long nd_dimm_get_dsm_mask(struct nd_dimm *nd_dimm)
+{
+	if (nd_dimm)
+		return nd_dimm->dsm_mask;
+	return 0;
+}
+EXPORT_SYMBOL(nd_dimm_get_dsm_mask);
+
+void nd_dimm_set_dsm_mask(struct nd_dimm *nd_dimm, unsigned long dsm_mask)
+{
+	if (nd_dimm)
+		nd_dimm->dsm_mask = dsm_mask;
+}
+EXPORT_SYMBOL(nd_dimm_set_dsm_mask);
+
 static ssize_t handle_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	struct nfit_mem __iomem *nfit_mem = to_nfit_mem(dev);
-
-	return sprintf(buf, "%#x\n", readl(&nfit_mem->nfit_handle));
+	return sprintf(buf, "%#x\n", to_nfit_handle(to_nd_dimm(dev)));
 }
 static DEVICE_ATTR_RO(handle);
 
@@ -129,6 +167,19 @@ static ssize_t serial_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(serial);
 
+static ssize_t commands_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_dimm *nd_dimm = to_nd_dimm(dev);
+	int cmd, len = 0;
+
+	for_each_set_bit(cmd, &nd_dimm->dsm_mask, BITS_PER_LONG)
+		len += sprintf(buf + len, "%s ", nfit_dimm_cmd_name(cmd));
+	len += sprintf(buf + len, "\n");
+	return len;
+}
+static DEVICE_ATTR_RO(commands);
+
 static struct attribute *nd_dimm_attributes[] = {
 	&dev_attr_handle.attr,
 	&dev_attr_phys_id.attr,
@@ -137,6 +188,7 @@ static struct attribute *nd_dimm_attributes[] = {
 	&dev_attr_format.attr,
 	&dev_attr_serial.attr,
 	&dev_attr_revision.attr,
+	&dev_attr_commands.attr,
 	NULL,
 };
 
@@ -166,6 +218,7 @@ static struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus,
 		struct nd_mem *nd_mem)
 {
 	struct nd_dimm *nd_dimm = kzalloc(sizeof(*nd_dimm), GFP_KERNEL);
+	struct nfit_bus_descriptor *nfit_desc = nd_bus->nfit_desc;
 	struct device *dev;
 	u32 nfit_handle;
 
@@ -193,6 +246,14 @@ static struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus,
 	dev->type = &nd_dimm_device_type;
 	dev->bus = &nd_bus_type;
 	dev->groups = nd_dimm_attribute_groups;
+	dev->devt = MKDEV(nd_dimm_major, nd_dimm->id);
+	if (nfit_desc->add_dimm)
+		if (nfit_desc->add_dimm(nfit_desc, nd_dimm) != 0) {
+			device_initialize(dev);
+			put_device(dev);
+			return NULL;
+		}
+
 	if (device_register(dev) != 0) {
 		put_device(dev);
 		return NULL;

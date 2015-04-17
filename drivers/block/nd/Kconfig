@@ -42,6 +42,17 @@ config NFIT_ACPI
 	  enables the core to craft ACPI._DSM messages for platform/dimm
 	  configuration.
 
+config NFIT_ACPI_DEBUG
+	bool "NFIT ACPI: Turn on extra debugging"
+	depends on NFIT_ACPI
+	depends on DYNAMIC_DEBUG
+	default n
+	help
+	  Enabling this option causes the nd_acpi driver to dump the
+	  input and output buffers of _DSM operations on the ACPI0012
+	  device, which can be very verbose.  Leave it disabled unless
+	  you are debugging a hardware / firmware issue.
+
 config NFIT_TEST
 	tristate "NFIT TEST: Manufactured NFIT for interface testing"
 	depends on DMA_CMA

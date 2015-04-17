@@ -14,10 +14,12 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
+#include <linux/ndctl.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include "nfit_test.h"
 #include "../nfit.h"
+#include "../nd.h"
 
 #include <asm-generic/io-64-nonatomic-lo-hi.h>
 
@@ -138,11 +140,94 @@ static struct nfit_test *to_nfit_test(struct device *dev)
 	return container_of(pdev, struct nfit_test, pdev);
 }
 
+static int nfit_test_add_dimm(struct nfit_bus_descriptor *nfit_desc,
+		struct nd_dimm *nd_dimm)
+{
+	u32 nfit_handle = to_nfit_handle(nd_dimm);
+	unsigned long dsm_mask = 0;
+	long i;
+
+	for (i = 0; i < ARRAY_SIZE(handle); i++)
+		if (nfit_handle == handle[i])
+			break;
+	if (i >= ARRAY_SIZE(handle))
+		return -EINVAL;
+
+	set_bit(NFIT_CMD_GET_CONFIG_SIZE, &dsm_mask);
+	set_bit(NFIT_CMD_GET_CONFIG_DATA, &dsm_mask);
+	set_bit(NFIT_CMD_SET_CONFIG_DATA, &dsm_mask);
+	nd_dimm_set_dsm_mask(nd_dimm, dsm_mask);
+	nd_dimm_set_pdata(nd_dimm, (void *) i);
+	return 0;
+}
+
 static int nfit_test_ctl(struct nfit_bus_descriptor *nfit_desc,
 		struct nd_dimm *nd_dimm, unsigned int cmd, void *buf,
 		unsigned int buf_len)
 {
-	return -ENOTTY;
+	struct nfit_test *t = container_of(nfit_desc, typeof(*t), nfit_desc);
+	unsigned long dsm_mask = nd_dimm_get_dsm_mask(nd_dimm);
+	int i, rc;
+
+	if (!nd_dimm || !test_bit(cmd, &dsm_mask))
+		return -ENXIO;
+
+	/* lookup label space for the given dimm */
+	i = (long) nd_dimm_get_pdata(nd_dimm);
+
+	switch (cmd) {
+	case NFIT_CMD_GET_CONFIG_SIZE: {
+		struct nfit_cmd_get_config_size *nfit_cmd = buf;
+
+		if (buf_len < sizeof(*nfit_cmd))
+			return -EINVAL;
+		nfit_cmd->status = 0;
+		nfit_cmd->config_size = LABEL_SIZE;
+		nfit_cmd->max_xfer = SZ_4K;
+		rc = 0;
+		break;
+	}
+	case NFIT_CMD_GET_CONFIG_DATA: {
+		struct nfit_cmd_get_config_data_hdr *nfit_cmd = buf;
+		unsigned int len, offset = nfit_cmd->in_offset;
+
+		if (buf_len < sizeof(*nfit_cmd))
+			return -EINVAL;
+		if (offset >= LABEL_SIZE)
+			return -EINVAL;
+		if (nfit_cmd->in_length + sizeof(*nfit_cmd) > buf_len)
+			return -EINVAL;
+
+		nfit_cmd->status = 0;
+		len = min(nfit_cmd->in_length, LABEL_SIZE - offset);
+		memcpy(nfit_cmd->out_buf, t->label[i] + offset, len);
+		rc = buf_len - sizeof(*nfit_cmd) - len;
+		break;
+	}
+	case NFIT_CMD_SET_CONFIG_DATA: {
+		struct nfit_cmd_set_config_hdr *nfit_cmd = buf;
+		unsigned int len, offset = nfit_cmd->in_offset;
+		u32 *status;
+
+		if (buf_len < sizeof(*nfit_cmd))
+			return -EINVAL;
+		if (offset >= LABEL_SIZE)
+			return -EINVAL;
+		if (nfit_cmd->in_length + sizeof(*nfit_cmd) + 4 > buf_len)
+			return -EINVAL;
+
+		status = buf + nfit_cmd->in_length + sizeof(*nfit_cmd);
+		*status = 0;
+		len = min(nfit_cmd->in_length, LABEL_SIZE - offset);
+		memcpy(t->label[i] + offset, nfit_cmd->in_buf, len);
+		rc = buf_len - sizeof(*nfit_cmd) - (len + 4);
+		break;
+	}
+	default:
+		return -ENOTTY;
+	}
+
+	return rc;
 }
 
 static DEFINE_SPINLOCK(nfit_test_lock);
@@ -234,6 +319,7 @@ static int nfit_test0_alloc(struct nfit_test *t)
 		t->label[i] = alloc_coherent(t, LABEL_SIZE, &t->label_dma[i]);
 		if (!t->label[i])
 			return -ENOMEM;
+		sprintf(t->label[i], "label%d", i);
 	}
 
 	for (i = 0; i < NUM_DCR; i++) {
@@ -726,6 +812,7 @@ static void nfit_test0_setup(struct nfit_test *t)
 
 	nfit_desc = &t->nfit_desc;
 	nfit_desc->nfit_ctl = nfit_test_ctl;
+	nfit_desc->add_dimm = nfit_test_add_dimm;
 }
 
 static void nfit_test1_setup(struct nfit_test *t)
