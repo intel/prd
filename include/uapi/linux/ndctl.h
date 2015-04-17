@@ -175,4 +175,10 @@ static inline const char *nfit_dimm_cmd_name(unsigned cmd)
 #define NFIT_IOCTL_ARS_QUERY		_IOWR(ND_IOCTL, NFIT_CMD_ARS_QUERY,\
 					struct nfit_cmd_ars_query)
 
+
+#define ND_DEVICE_DIMM 1            /* nd_dimm: container for "config data" */
+
+enum nd_driver_flags {
+	ND_DRIVER_DIMM            = 1 << ND_DEVICE_DIMM,
+};
 #endif /* __NDCTL_H__ */

@@ -11,6 +11,7 @@
  * General Public License for more details.
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#include <linux/vmalloc.h>
 #include <linux/device.h>
 #include <linux/ndctl.h>
 #include <linux/slab.h>
@@ -22,6 +23,112 @@
 #include "nd.h"
 
 static DEFINE_IDA(dimm_ida);
+
+/*
+ * Retrieve bus and dimm handle and return if this bus supports
+ * get_config_data commands
+ */
+static int __validate_dimm(struct nd_dimm_drvdata *ndd)
+{
+	struct nd_dimm *nd_dimm;
+
+	if (!ndd)
+		return -EINVAL;
+
+	nd_dimm = to_nd_dimm(ndd->dev);
+
+	if (!test_bit(NFIT_CMD_GET_CONFIG_DATA, &nd_dimm->dsm_mask))
+		return -ENXIO;
+
+	/* TODO: validate common format interface code */
+	if (!nd_dimm->nd_mem->nfit_dcr)
+		return -ENODEV;
+	return 0;
+}
+
+static int validate_dimm(struct nd_dimm_drvdata *ndd)
+{
+	int rc = __validate_dimm(ndd);
+
+	if (rc && ndd)
+		dev_dbg(ndd->dev, "%pf: %s error: %d\n",
+				__builtin_return_address(0), __func__, rc);
+	return rc;
+}
+
+/**
+ * nd_dimm_init_nsarea - determine the geometry of a dimm's namespace area
+ * @nd_dimm: dimm to initialize
+ */
+int nd_dimm_init_nsarea(struct nd_dimm_drvdata *ndd)
+{
+	struct nfit_cmd_get_config_size *cmd = &ndd->nsarea;
+	struct nd_bus *nd_bus = walk_to_nd_bus(ndd->dev);
+	struct nfit_bus_descriptor *nfit_desc;
+	int rc = validate_dimm(ndd);
+
+	if (rc)
+		return rc;
+
+	if (cmd->config_size)
+		return 0; /* already valid */
+
+	memset(cmd, 0, sizeof(*cmd));
+	nfit_desc = nd_bus->nfit_desc;
+	return nfit_desc->nfit_ctl(nfit_desc, to_nd_dimm(ndd->dev),
+			NFIT_CMD_GET_CONFIG_SIZE, cmd, sizeof(*cmd));
+}
+
+int nd_dimm_init_config_data(struct nd_dimm_drvdata *ndd)
+{
+	struct nd_bus *nd_bus = walk_to_nd_bus(ndd->dev);
+	struct nfit_cmd_get_config_data_hdr *cmd;
+	struct nfit_bus_descriptor *nfit_desc;
+	int rc = validate_dimm(ndd);
+	u32 max_cmd_size, config_size;
+	size_t offset;
+
+	if (rc)
+		return rc;
+
+	if (ndd->data)
+		return 0;
+
+	if (ndd->nsarea.status || ndd->nsarea.max_xfer == 0)
+		return -ENXIO;
+
+	ndd->data = kmalloc(ndd->nsarea.config_size, GFP_KERNEL);
+	if (!ndd->data)
+		ndd->data = vmalloc(ndd->nsarea.config_size);
+
+	if (!ndd->data)
+		return -ENOMEM;
+
+	max_cmd_size = min_t(u32, PAGE_SIZE, ndd->nsarea.max_xfer);
+	cmd = kzalloc(max_cmd_size + sizeof(*cmd), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	nfit_desc = nd_bus->nfit_desc;
+	for (config_size = ndd->nsarea.config_size, offset = 0;
+			config_size; config_size -= cmd->in_length,
+			offset += cmd->in_length) {
+		cmd->in_length = min(config_size, max_cmd_size);
+		cmd->in_offset = offset;
+		rc = nfit_desc->nfit_ctl(nfit_desc, to_nd_dimm(ndd->dev),
+				NFIT_CMD_GET_CONFIG_DATA, cmd,
+				cmd->in_length + sizeof(*cmd));
+		if (rc || cmd->status) {
+			rc = -ENXIO;
+			break;
+		}
+		memcpy(ndd->data + offset, cmd->out_buf, cmd->in_length);
+	}
+	dev_dbg(ndd->dev, "%s: len: %zd rc: %d\n", __func__, offset, rc);
+	kfree(cmd);
+
+	return rc;
+}
 
 static void nd_dimm_release(struct device *dev)
 {
@@ -211,8 +318,26 @@ static struct attribute_group nd_dimm_attribute_group = {
 
 static const struct attribute_group *nd_dimm_attribute_groups[] = {
 	&nd_dimm_attribute_group,
+	&nd_device_attribute_group,
 	NULL,
 };
+
+/**
+ * nd_dimm_firmware_status - retrieve NFIT-specific state of the dimm
+ * @dev: dimm device to interrogate
+ *
+ * At init time as the NFIT parsing code discovers DIMMs (memdevs) it
+ * validates the state of those devices against the NFIT provider.  It
+ * is possible that an NFIT entry exists for the DIMM but the device is
+ * disabled.  In that case we will still create an nd_dimm, but prevent
+ * it from binding to its driver.
+ */
+int nd_dimm_firmware_status(struct device *dev)
+{
+	struct nd_dimm *nd_dimm = to_nd_dimm(dev);
+
+	return nd_dimm->nfit_status;
+}
 
 static struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus,
 		struct nd_mem *nd_mem)
@@ -244,20 +369,12 @@ static struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus,
 	dev_set_name(dev, "nmem%d", nd_dimm->id);
 	dev->parent = &nd_bus->dev;
 	dev->type = &nd_dimm_device_type;
-	dev->bus = &nd_bus_type;
 	dev->groups = nd_dimm_attribute_groups;
 	dev->devt = MKDEV(nd_dimm_major, nd_dimm->id);
 	if (nfit_desc->add_dimm)
-		if (nfit_desc->add_dimm(nfit_desc, nd_dimm) != 0) {
-			device_initialize(dev);
-			put_device(dev);
-			return NULL;
-		}
+		nd_dimm->nfit_status = nfit_desc->add_dimm(nfit_desc, nd_dimm);
 
-	if (device_register(dev) != 0) {
-		put_device(dev);
-		return NULL;
-	}
+	nd_device_register(dev);
 
 	return nd_dimm;
  err_ida:
@@ -267,6 +384,15 @@ static struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus,
  err_del_info:
 	kfree(nd_dimm);
 	return NULL;
+}
+
+static int count_dimms(struct device *dev, void *c)
+{
+	int *count = c;
+
+	if (is_nd_dimm(dev))
+		(*count)++;
+	return 0;
 }
 
 int nd_bus_register_dimms(struct nd_bus *nd_bus)
@@ -300,5 +426,18 @@ int nd_bus_register_dimms(struct nd_bus *nd_bus)
 	}
 	mutex_unlock(&nd_bus_list_mutex);
 
-	return rc;
+	/*
+	 * Flush dimm registration as 'nd_region' registration depends on
+	 * finding 'nd_dimm's on the bus.
+	 */
+	nd_synchronize();
+	if (rc)
+		return rc;
+
+	rc = 0;
+	device_for_each_child(&nd_bus->dev, &rc, count_dimms);
+	dev_dbg(&nd_bus->dev, "%s: count: %d\n", __func__, rc);
+	if (rc != dimm_count)
+		return -ENXIO;
+	return 0;
 }

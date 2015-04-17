@@ -150,8 +150,33 @@ static ssize_t revision_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(revision);
 
+static int flush_namespaces(struct device *dev, void *data)
+{
+	device_lock(dev);
+	device_unlock(dev);
+	return 0;
+}
+
+static int flush_regions_dimms(struct device *dev, void *data)
+{
+	device_lock(dev);
+	device_unlock(dev);
+	device_for_each_child(dev, NULL, flush_namespaces);
+	return 0;
+}
+
+static ssize_t wait_probe_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	nd_synchronize();
+	device_for_each_child(dev, NULL, flush_regions_dimms);
+	return sprintf(buf, "1\n");
+}
+static DEVICE_ATTR_RO(wait_probe);
+
 static struct attribute *nd_bus_attributes[] = {
 	&dev_attr_commands.attr,
+	&dev_attr_wait_probe.attr,
 	&dev_attr_provider.attr,
 	&dev_attr_revision.attr,
 	NULL,
@@ -491,7 +516,7 @@ static int child_unregister(struct device *dev, void *data)
 	if (dev->class)
 		/* pass */;
 	else
-		device_unregister(dev);
+		nd_device_unregister(dev, ND_SYNC);
 	return 0;
 }
 
@@ -594,6 +619,7 @@ void nfit_bus_unregister(struct nd_bus *nd_bus)
 	list_del_init(&nd_bus->list);
 	mutex_unlock(&nd_bus_list_mutex);
 
+	nd_synchronize();
 	device_for_each_child(&nd_bus->dev, NULL, child_unregister);
 	nd_bus_destroy_ndctl(nd_bus);
 
@@ -603,6 +629,8 @@ EXPORT_SYMBOL(nfit_bus_unregister);
 
 static __init int nd_core_init(void)
 {
+	int rc;
+
 	BUILD_BUG_ON(sizeof(struct nfit) != 40);
 	BUILD_BUG_ON(sizeof(struct nfit_spa) != 56);
 	BUILD_BUG_ON(sizeof(struct nfit_mem) != 48);
@@ -611,12 +639,23 @@ static __init int nd_core_init(void)
 	BUILD_BUG_ON(sizeof(struct nfit_dcr) != 80);
 	BUILD_BUG_ON(sizeof(struct nfit_bdw) != 40);
 
-	return nd_bus_init();
+	rc = nd_bus_init();
+	if (rc)
+		return rc;
+	rc = nd_dimm_init();
+	if (rc)
+		goto err_dimm;
+	return 0;
+ err_dimm:
+	nd_bus_exit();
+	return rc;
+
 }
 
 static __exit void nd_core_exit(void)
 {
 	WARN_ON(!list_empty(&nd_bus_list));
+	nd_dimm_exit();
 	nd_bus_exit();
 }
 MODULE_LICENSE("GPL v2");
