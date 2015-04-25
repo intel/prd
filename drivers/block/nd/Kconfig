@@ -1,0 +1,40 @@
+menuconfig ND_DEVICES
+	bool "NVDIMM Support"
+	depends on PHYS_ADDR_T_64BIT
+	help
+	  Generic support for non-volatile memory devices including
+	  ACPI-6-NFIT defined resources.  On platforms that define an
+	  NFIT, or otherwise can discover NVDIMM resources, a libnd
+	  bus is registered to advertise PMEM (persistent memory)
+	  namespaces (/dev/pmemX) and BLK (sliding mmio window(s))
+	  namespaces (/dev/ndX). A PMEM namespace refers to a memory
+	  resource that may span multiple DIMMs and support DAX (see
+	  CONFIG_DAX).  A BLK namespace refers to an NVDIMM control
+	  region which exposes an mmio register set for windowed
+	  access mode to non-volatile memory.
+
+if ND_DEVICES
+
+config LIBND
+	tristate "LIBND: libnd device driver support"
+	help
+	  Platform agnostic device model for a libnd bus.  Publishes
+	  resources for a PMEM (persistent-memory) driver and/or BLK
+	  (sliding mmio window(s)) driver to attach.  Exposes a device
+	  topology under a "ndX" bus device, a "/dev/ndctlX" bus-ioctl
+	  message passing interface, and a "/dev/nmemX" dimm-ioctl
+	  message interface for each memory device registered on the
+	  bus.  instance.  A userspace library "ndctl" provides an API
+	  to enumerate/manage this subsystem.
+
+config ND_ACPI
+	tristate "ACPI: NFIT to libnd bus support"
+	select LIBND
+	depends on ACPI
+	help
+	  Infrastructure to probe ACPI 6 compliant platforms for
+	  NVDIMMs (NFIT) and register a libnd device tree.  In
+	  addition to storage devices this also enables libnd craft
+	  ACPI._DSM messages for platform/dimm configuration.
+
+endif
