@@ -233,6 +233,7 @@ struct nfit_memdev {
 
 /* assembled tables for a given dimm/memory-device */
 struct nfit_mem {
+	struct nd_dimm *nd_dimm;
 	struct acpi_nfit_memdev *memdev_dcr;
 	struct acpi_nfit_memdev *memdev_pmem;
 	struct acpi_nfit_dcr *dcr;

@@ -369,6 +369,164 @@ const struct attribute_group *nd_acpi_attribute_groups[] = {
 };
 EXPORT_SYMBOL_GPL(nd_acpi_attribute_groups);
 
+static struct acpi_nfit_memdev *to_nfit_memdev(struct device *dev)
+{
+	struct nd_dimm *nd_dimm = to_nd_dimm(dev);
+	struct nfit_mem *nfit_mem = nd_dimm_provider_data(nd_dimm);
+
+	return __to_nfit_memdev(nfit_mem);
+}
+
+static struct acpi_nfit_dcr *to_nfit_dcr(struct device *dev)
+{
+	struct nd_dimm *nd_dimm = to_nd_dimm(dev);
+	struct nfit_mem *nfit_mem = nd_dimm_provider_data(nd_dimm);
+
+	return nfit_mem->dcr;
+}
+
+static ssize_t handle_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct acpi_nfit_memdev *memdev = to_nfit_memdev(dev);
+
+	return sprintf(buf, "%#x\n", memdev->nfit_handle);
+}
+static DEVICE_ATTR_RO(handle);
+
+static ssize_t phys_id_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct acpi_nfit_memdev *memdev = to_nfit_memdev(dev);
+
+	return sprintf(buf, "%#x\n", memdev->phys_id);
+}
+static DEVICE_ATTR_RO(phys_id);
+
+static ssize_t vendor_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct acpi_nfit_dcr *dcr = to_nfit_dcr(dev);
+
+	return sprintf(buf, "%#x\n", dcr->vendor_id);
+}
+static DEVICE_ATTR_RO(vendor);
+
+static ssize_t rev_id_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct acpi_nfit_dcr *dcr = to_nfit_dcr(dev);
+
+	return sprintf(buf, "%#x\n", dcr->revision_id);
+}
+static DEVICE_ATTR_RO(rev_id);
+
+static ssize_t device_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct acpi_nfit_dcr *dcr = to_nfit_dcr(dev);
+
+	return sprintf(buf, "%#x\n", dcr->device_id);
+}
+static DEVICE_ATTR_RO(device);
+
+static ssize_t format_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct acpi_nfit_dcr *dcr = to_nfit_dcr(dev);
+
+	return sprintf(buf, "%#x\n", dcr->fic);
+}
+static DEVICE_ATTR_RO(format);
+
+static ssize_t serial_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct acpi_nfit_dcr *dcr = to_nfit_dcr(dev);
+
+	return sprintf(buf, "%#x\n", dcr->serial_number);
+}
+static DEVICE_ATTR_RO(serial);
+
+static struct attribute *nd_acpi_dimm_attributes[] = {
+	&dev_attr_handle.attr,
+	&dev_attr_phys_id.attr,
+	&dev_attr_vendor.attr,
+	&dev_attr_device.attr,
+	&dev_attr_format.attr,
+	&dev_attr_serial.attr,
+	&dev_attr_rev_id.attr,
+	NULL,
+};
+
+static umode_t nd_acpi_dimm_attr_visible(struct kobject *kobj, struct attribute *a, int n)
+{
+	struct device *dev = container_of(kobj, struct device, kobj);
+
+	if (to_nfit_dcr(dev))
+		return a->mode;
+	else
+		return 0;
+}
+
+static struct attribute_group nd_acpi_dimm_attribute_group = {
+	.name = "nfit",
+	.attrs = nd_acpi_dimm_attributes,
+	.is_visible = nd_acpi_dimm_attr_visible,
+};
+
+static const struct attribute_group *nd_acpi_dimm_attribute_groups[] = {
+	&nd_acpi_dimm_attribute_group,
+	NULL,
+};
+
+static struct nd_dimm *nd_acpi_dimm_by_handle(struct acpi_nfit_desc *acpi_desc,
+		u32 nfit_handle)
+{
+	struct nfit_mem *nfit_mem;
+
+	list_for_each_entry(nfit_mem, &acpi_desc->dimms, list)
+		if (__to_nfit_memdev(nfit_mem)->nfit_handle == nfit_handle)
+			return nfit_mem->nd_dimm;
+
+	return NULL;
+}
+
+static int nd_acpi_register_dimms(struct acpi_nfit_desc *acpi_desc)
+{
+	struct nfit_mem *nfit_mem;
+
+	list_for_each_entry(nfit_mem, &acpi_desc->dimms, list) {
+		struct nd_dimm *nd_dimm;
+		unsigned long flags = 0;
+		u32 nfit_handle;
+
+		nfit_handle = __to_nfit_memdev(nfit_mem)->nfit_handle;
+		nd_dimm = nd_acpi_dimm_by_handle(acpi_desc, nfit_handle);
+		if (nd_dimm) {
+			/*
+			 * If for some reason we find multiple DCRs the
+			 * first one wins
+			 */
+			dev_err(acpi_desc->dev, "duplicate DCR detected: %s\n",
+					nd_dimm_name(nd_dimm));
+			continue;
+		}
+
+		if (nfit_mem->bdw && nfit_mem->memdev_pmem)
+			flags |= NDD_ALIASING;
+
+		nd_dimm = nd_dimm_create(acpi_desc->nd_bus, nfit_mem,
+				nd_acpi_dimm_attribute_groups, flags);
+		if (!nd_dimm)
+			return -ENOMEM;
+
+		nfit_mem->nd_dimm = nd_dimm;
+	}
+
+	return 0;
+}
+
 int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 {
 	struct device *dev = acpi_desc->dev;
@@ -406,7 +564,7 @@ int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 	if (nfit_mem_init(acpi_desc) != 0)
 		return -ENOMEM;
 
-	return 0;
+	return nd_acpi_register_dimms(acpi_desc);
 }
 EXPORT_SYMBOL_GPL(nd_acpi_nfit_init);
 

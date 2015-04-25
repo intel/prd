@@ -46,6 +46,19 @@ struct nd_bus_descriptor *to_nd_desc(struct nd_bus *nd_bus)
 }
 EXPORT_SYMBOL_GPL(to_nd_desc);
 
+struct nd_bus *walk_to_nd_bus(struct device *nd_dev)
+{
+	struct device *dev;
+
+	for (dev = nd_dev; dev; dev = dev->parent)
+		if (dev->release == nd_bus_release)
+			break;
+	dev_WARN_ONCE(nd_dev, !dev, "invalid dev, not on nd bus\n");
+	if (dev)
+		return to_nd_bus(dev);
+	return NULL;
+}
+
 static const char *nd_bus_provider(struct nd_bus *nd_bus)
 {
 	struct nd_bus_descriptor *nd_desc = nd_bus->nd_desc;
@@ -118,6 +131,21 @@ struct nd_bus *nd_bus_register(struct device *parent,
 }
 EXPORT_SYMBOL_GPL(nd_bus_register);
 
+static int child_unregister(struct device *dev, void *data)
+{
+	/*
+	 * the singular ndctl class device per bus needs to be
+	 * "device_destroy"ed, so skip it here
+	 *
+	 * i.e. remove classless children
+	 */
+	if (dev->class)
+		/* pass */;
+	else
+		device_unregister(dev);
+	return 0;
+}
+
 void nd_bus_unregister(struct nd_bus *nd_bus)
 {
 	if (!nd_bus)
@@ -127,6 +155,7 @@ void nd_bus_unregister(struct nd_bus *nd_bus)
 	list_del_init(&nd_bus->list);
 	mutex_unlock(&nd_bus_list_mutex);
 
+	device_for_each_child(&nd_bus->dev, NULL, child_unregister);
 	nd_bus_destroy_ndctl(nd_bus);
 
 	device_unregister(&nd_bus->dev);
