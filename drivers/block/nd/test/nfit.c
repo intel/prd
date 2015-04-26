@@ -833,6 +833,8 @@ static void nfit_test1_setup(struct nfit_test *t)
 	nfit->checksum = nfit_checksum(nfit_buf, size);
 }
 
+extern const struct attribute_group *nd_acpi_attribute_groups[];
+
 static int nfit_test_probe(struct platform_device *pdev)
 {
 	struct nd_bus_descriptor *nd_desc;
@@ -882,6 +884,7 @@ static int nfit_test_probe(struct platform_device *pdev)
 	acpi_desc->dev = &pdev->dev;
 	acpi_desc->nfit = nfit_test->nfit_buf;
 	nd_desc = &acpi_desc->nd_desc;
+	nd_desc->attr_groups = nd_acpi_attribute_groups;
 	acpi_desc->nd_bus = nd_bus_register(&pdev->dev, nd_desc);
 	if (!acpi_desc->nd_bus)
 		return -ENXIO;

@@ -261,5 +261,10 @@ static inline struct acpi_nfit_memdev *__to_nfit_memdev(struct nfit_mem *nfit_me
 	return nfit_mem->memdev_pmem;
 }
 
+static inline struct acpi_nfit_desc *to_acpi_desc(struct nd_bus_descriptor *nd_desc)
+{
+	return container_of(nd_desc, struct acpi_nfit_desc, nd_desc);
+}
+
 int nd_acpi_nfit_init(struct acpi_nfit_desc *nfit, acpi_size sz);
 #endif /* __NFIT_H__ */

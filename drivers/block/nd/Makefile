@@ -19,3 +19,4 @@ obj-$(CONFIG_NFIT_TEST) += test/
 nd_acpi-y := acpi.o
 
 libnd-y := core.o
+libnd-y += bus.o

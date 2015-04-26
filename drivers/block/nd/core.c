@@ -13,10 +13,13 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/mutex.h>
 #include <linux/slab.h>
 #include "nd-private.h"
 #include "libnd.h"
 
+LIST_HEAD(nd_bus_list);
+DEFINE_MUTEX(nd_bus_list_mutex);
 static DEFINE_IDA(nd_ida);
 
 static void nd_bus_release(struct device *dev)
@@ -27,6 +30,54 @@ static void nd_bus_release(struct device *dev)
 	kfree(nd_bus);
 }
 
+struct nd_bus *to_nd_bus(struct device *dev)
+{
+	struct nd_bus *nd_bus = container_of(dev, struct nd_bus, dev);
+
+	WARN_ON(nd_bus->dev.release != nd_bus_release);
+	return nd_bus;
+}
+EXPORT_SYMBOL_GPL(to_nd_bus);
+
+struct nd_bus_descriptor *to_nd_desc(struct nd_bus *nd_bus)
+{
+	/* struct nd_bus definition is private to libnd */
+	return nd_bus->nd_desc;
+}
+EXPORT_SYMBOL_GPL(to_nd_desc);
+
+static const char *nd_bus_provider(struct nd_bus *nd_bus)
+{
+	struct nd_bus_descriptor *nd_desc = nd_bus->nd_desc;
+	struct device *parent = nd_bus->dev.parent;
+
+	if (nd_desc->provider_name)
+		return nd_desc->provider_name;
+	else if (parent)
+		return dev_name(parent);
+	else
+		return "unknown";
+}
+
+static ssize_t provider_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_bus *nd_bus = to_nd_bus(dev);
+
+	return sprintf(buf, "%s\n", nd_bus_provider(nd_bus));
+}
+static DEVICE_ATTR_RO(provider);
+
+static struct attribute *nd_bus_attributes[] = {
+	&dev_attr_provider.attr,
+	NULL,
+};
+
+struct attribute_group nd_bus_attribute_group = {
+	.attrs = nd_bus_attributes,
+};
+EXPORT_SYMBOL_GPL(nd_bus_attribute_group);
+
 struct nd_bus *nd_bus_register(struct device *parent,
 		struct nd_bus_descriptor *nd_desc)
 {
@@ -35,6 +86,7 @@ struct nd_bus *nd_bus_register(struct device *parent,
 
 	if (!nd_bus)
 		return NULL;
+	INIT_LIST_HEAD(&nd_bus->list);
 	nd_bus->id = ida_simple_get(&nd_ida, 0, 0, GFP_KERNEL);
 	if (nd_bus->id < 0) {
 		kfree(nd_bus);
@@ -43,15 +95,26 @@ struct nd_bus *nd_bus_register(struct device *parent,
 	nd_bus->nd_desc = nd_desc;
 	nd_bus->dev.parent = parent;
 	nd_bus->dev.release = nd_bus_release;
+	nd_bus->dev.groups = nd_desc->attr_groups;
 	dev_set_name(&nd_bus->dev, "ndbus%d", nd_bus->id);
 	rc = device_register(&nd_bus->dev);
 	if (rc) {
 		dev_dbg(&nd_bus->dev, "device registration failed: %d\n", rc);
-		put_device(&nd_bus->dev);
-		return NULL;
+		goto err;
 	}
 
+	rc = nd_bus_create_ndctl(nd_bus);
+	if (rc)
+		goto err;
+
+	mutex_lock(&nd_bus_list_mutex);
+	list_add_tail(&nd_bus->list, &nd_bus_list);
+	mutex_unlock(&nd_bus_list_mutex);
+
 	return nd_bus;
+ err:
+	put_device(&nd_bus->dev);
+	return NULL;
 }
 EXPORT_SYMBOL_GPL(nd_bus_register);
 
@@ -59,9 +122,29 @@ void nd_bus_unregister(struct nd_bus *nd_bus)
 {
 	if (!nd_bus)
 		return;
+
+	mutex_lock(&nd_bus_list_mutex);
+	list_del_init(&nd_bus->list);
+	mutex_unlock(&nd_bus_list_mutex);
+
+	nd_bus_destroy_ndctl(nd_bus);
+
 	device_unregister(&nd_bus->dev);
 }
 EXPORT_SYMBOL_GPL(nd_bus_unregister);
 
+static __init int libnd_init(void)
+{
+	return nd_bus_init();
+}
+
+static __exit void libnd_exit(void)
+{
+	WARN_ON(!list_empty(&nd_bus_list));
+	nd_bus_exit();
+}
+
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Intel Corporation");
+module_init(libnd_init);
+module_exit(libnd_exit);

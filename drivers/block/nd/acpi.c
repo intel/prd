@@ -341,6 +341,34 @@ static int nfit_mem_init(struct acpi_nfit_desc *acpi_desc)
 	return 0;
 }
 
+static ssize_t revision_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_bus *nd_bus = to_nd_bus(dev);
+	struct nd_bus_descriptor *nd_desc = to_nd_desc(nd_bus);
+	struct acpi_nfit_desc *acpi_desc = to_acpi_desc(nd_desc);
+
+	return sprintf(buf, "%d\n", acpi_desc->nfit->revision);
+}
+static DEVICE_ATTR_RO(revision);
+
+static struct attribute *nd_acpi_attributes[] = {
+	&dev_attr_revision.attr,
+	NULL,
+};
+
+static struct attribute_group nd_acpi_attribute_group = {
+	.name = "nfit",
+	.attrs = nd_acpi_attributes,
+};
+
+const struct attribute_group *nd_acpi_attribute_groups[] = {
+	&nd_bus_attribute_group,
+	&nd_acpi_attribute_group,
+	NULL,
+};
+EXPORT_SYMBOL_GPL(nd_acpi_attribute_groups);
+
 int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 {
 	struct device *dev = acpi_desc->dev;
@@ -408,6 +436,7 @@ static int nd_acpi_add(struct acpi_device *adev)
 	nd_desc = &acpi_desc->nd_desc;
 	nd_desc->provider_name = "ACPI.NFIT";
 	nd_desc->ndctl = nd_acpi_ctl;
+	nd_desc->attr_groups = nd_acpi_attribute_groups;
 
 	acpi_desc->nd_bus = nd_bus_register(dev, nd_desc);
 	if (!acpi_desc->nd_bus)

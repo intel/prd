@@ -14,6 +14,8 @@
  */
 #ifndef __LIBND_H__
 #define __LIBND_H__
+extern struct attribute_group nd_bus_attribute_group;
+
 struct nd_dimm;
 struct nd_bus_descriptor;
 typedef int (*ndctl_fn)(struct nd_bus_descriptor *nd_desc,
@@ -21,6 +23,7 @@ typedef int (*ndctl_fn)(struct nd_bus_descriptor *nd_desc,
 		unsigned int buf_len);
 
 struct nd_bus_descriptor {
+	const struct attribute_group **attr_groups;
 	unsigned long dsm_mask;
 	char *provider_name;
 	ndctl_fn ndctl;
@@ -30,4 +33,6 @@ struct nd_bus;
 struct nd_bus *nd_bus_register(struct device *parent,
 		struct nd_bus_descriptor *nfit_desc);
 void nd_bus_unregister(struct nd_bus *nd_bus);
+struct nd_bus *to_nd_bus(struct device *dev);
+struct nd_bus_descriptor *to_nd_desc(struct nd_bus *nd_bus);
 #endif /* __LIBND_H__ */
