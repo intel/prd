@@ -15,11 +15,22 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/ndctl.h>
+#include "libnd.h"
 
 struct nd_dimm_drvdata {
 	struct device *dev;
 	struct nd_cmd_get_config_size nsarea;
 	void *data;
+};
+
+struct nd_region {
+	struct device dev;
+	u16 ndr_mappings;
+	u64 ndr_size;
+	u64 ndr_start;
+	int id;
+	void *provider_data;
+	struct nd_mapping mapping[0];
 };
 
 enum nd_async_mode {

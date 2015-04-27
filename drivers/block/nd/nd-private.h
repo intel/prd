@@ -42,5 +42,8 @@ void __exit nd_dimm_exit(void);
 int nd_bus_create_ndctl(struct nd_bus *nd_bus);
 void nd_bus_destroy_ndctl(struct nd_bus *nd_bus);
 void nd_synchronize(void);
+int nd_bus_register_dimms(struct nd_bus *nd_bus);
+int nd_bus_register_regions(struct nd_bus *nd_bus);
+int nd_match_dimm(struct device *dev, void *data);
 bool is_nd_dimm(struct device *dev);
 #endif /* __ND_PRIVATE_H__ */

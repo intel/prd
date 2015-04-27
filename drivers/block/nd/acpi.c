@@ -751,12 +751,136 @@ static void nd_acpi_init_dsms(struct acpi_nfit_desc *acpi_desc)
 			set_bit(i, &nd_desc->dsm_mask);
 }
 
+static ssize_t spa_index_show(struct device *dev,
+                struct device_attribute *attr, char *buf)
+{
+        struct nd_region *nd_region = to_nd_region(dev);
+        struct nfit_spa *nfit_spa = nd_region_provider_data(nd_region);
+
+        return sprintf(buf, "%d\n", nfit_spa->spa->spa_index);
+}
+static DEVICE_ATTR_RO(spa_index);
+
+static struct attribute *nd_acpi_region_attributes[] = {
+	&dev_attr_spa_index.attr,
+	NULL,
+};
+
+static struct attribute_group nd_acpi_region_attribute_group = {
+	.name = "nfit",
+	.attrs = nd_acpi_region_attributes,
+};
+
+static const struct attribute_group *nd_acpi_region_attribute_groups[] = {
+	&nd_region_attribute_group,
+	&nd_mapping_attribute_group,
+	&nd_acpi_region_attribute_group,
+	NULL,
+};
+
+static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
+		struct nfit_spa *nfit_spa)
+{
+	static struct nd_mapping nd_mappings[ND_MAX_MAPPINGS];
+	struct acpi_nfit_spa *spa = nfit_spa->spa;
+	struct nfit_memdev *nfit_memdev;
+	struct nd_region_desc ndr_desc;
+	int spa_type, count = 0;
+	struct resource res;
+	u16 spa_index;
+
+	spa_type = nfit_spa_type(spa);
+	spa_index = spa->spa_index;
+	if (spa_index == 0) {
+		dev_dbg(acpi_desc->dev, "%s: detected invalid spa index\n",
+				__func__);
+		return 0;
+	}
+
+	memset(&res, 0, sizeof(res));
+	memset(&nd_mappings, 0, sizeof(nd_mappings));
+	memset(&ndr_desc, 0, sizeof(ndr_desc));
+	res.start = spa->spa_base;
+	res.end = res.start + spa->spa_length - 1;
+	ndr_desc.res = &res;
+	ndr_desc.provider_data = nfit_spa;
+	ndr_desc.attr_groups = nd_acpi_region_attribute_groups;
+	list_for_each_entry(nfit_memdev, &acpi_desc->memdevs, list) {
+		struct acpi_nfit_memdev *memdev = nfit_memdev->memdev;
+		struct nd_mapping *nd_mapping;
+		struct nd_dimm *nd_dimm;
+
+		if (memdev->spa_index != spa_index)
+			continue;
+		if (count >= ND_MAX_MAPPINGS) {
+			dev_err(acpi_desc->dev, "spa%d exceeds max mappings %d\n",
+					spa_index, ND_MAX_MAPPINGS);
+			return -ENXIO;
+		}
+		nd_dimm = nd_acpi_dimm_by_handle(acpi_desc, memdev->nfit_handle);
+		if (!nd_dimm) {
+			dev_err(acpi_desc->dev, "spa%d dimm: %#x not found\n",
+					spa_index, memdev->nfit_handle);
+			return -ENODEV;
+		}
+		nd_mapping = &nd_mappings[count++];
+		nd_mapping->nd_dimm = nd_dimm;
+		if (spa_type == NFIT_SPA_PM || spa_type == NFIT_SPA_VOLATILE) {
+			nd_mapping->start = memdev->region_dpa;
+			nd_mapping->size = memdev->region_len;
+		} else if (spa_type == NFIT_SPA_DCR) {
+			struct nfit_mem *nfit_mem;
+			int blk_valid = 1;
+
+			nfit_mem = nd_dimm_provider_data(nd_dimm);
+			if (!nfit_mem || !nfit_mem->bdw) {
+				dev_dbg(acpi_desc->dev, "%s: spa%d missing bdw\n",
+						nd_dimm_name(nd_dimm), spa_index);
+				blk_valid = 0;
+			} else {
+				nd_mapping->size = nfit_mem->bdw->blk_capacity;
+				nd_mapping->start = nfit_mem->bdw->blk_offset;
+			}
+
+			ndr_desc.nd_mapping = nd_mapping;
+			ndr_desc.num_mappings = blk_valid;
+			if (!nd_blk_region_create(acpi_desc->nd_bus, &ndr_desc))
+				return -ENOMEM;
+		}
+	}
+
+	ndr_desc.nd_mapping = nd_mappings;
+	ndr_desc.num_mappings = count;
+	if (spa_type == NFIT_SPA_PM) {
+		if (!nd_pmem_region_create(acpi_desc->nd_bus, &ndr_desc))
+			return -ENOMEM;
+	} else if (spa_type == NFIT_SPA_VOLATILE) {
+		if (!nd_volatile_region_create(acpi_desc->nd_bus, &ndr_desc))
+			return -ENOMEM;
+	}
+	return 0;
+}
+
+static int nd_acpi_register_regions(struct acpi_nfit_desc *acpi_desc)
+{
+	struct nfit_spa *nfit_spa;
+
+	list_for_each_entry(nfit_spa, &acpi_desc->spas, list) {
+		int rc = nd_acpi_register_region(acpi_desc, nfit_spa);
+
+		if (rc)
+			return rc;
+	}
+	return 0;
+}
+
 int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 {
 	struct device *dev = acpi_desc->dev;
 	const void *end;
 	u8 *data, sum;
 	acpi_size i;
+	int rc;
 
 	INIT_LIST_HEAD(&acpi_desc->spas);
 	INIT_LIST_HEAD(&acpi_desc->dcrs);
@@ -790,7 +914,11 @@ int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 
 	nd_acpi_init_dsms(acpi_desc);
 
-	return nd_acpi_register_dimms(acpi_desc);
+	rc = nd_acpi_register_dimms(acpi_desc);
+	if (rc)
+		return rc;
+
+	return nd_acpi_register_regions(acpi_desc);
 }
 EXPORT_SYMBOL_GPL(nd_acpi_nfit_init);
 
