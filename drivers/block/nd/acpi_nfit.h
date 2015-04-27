@@ -124,6 +124,15 @@ struct acpi_nfit_memdev {
 	u16 reserved;
 };
 
+#define NFIT_DIMM_HANDLE(node, socket, imc, chan, dimm) \
+	(((node & 0xfff) << 16) | ((socket & 0xf) << 12) \
+	 | ((imc & 0xf) << 8) | ((chan & 0xf) << 4) | (dimm & 0xf))
+#define NFIT_DIMM_NODE(handle) ((handle) >> 16 & 0xfff)
+#define NFIT_DIMM_SOCKET(handle) ((handle) >> 12 & 0xf)
+#define NFIT_DIMM_CHAN(handle) ((handle) >> 8 & 0xf)
+#define NFIT_DIMM_IMC(handle) ((handle) >> 4 & 0xf)
+#define NFIT_DIMM_DIMM(handle) ((handle) & 0xf)
+
 /**
  * struct acpi_nfit_idt - Interleave description Table
  */
@@ -251,4 +260,6 @@ static inline struct acpi_nfit_memdev *__to_nfit_memdev(struct nfit_mem *nfit_me
 		return nfit_mem->memdev_dcr;
 	return nfit_mem->memdev_pmem;
 }
+
+int nd_acpi_nfit_init(struct acpi_nfit_desc *nfit, acpi_size sz);
 #endif /* __NFIT_H__ */

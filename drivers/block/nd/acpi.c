@@ -341,7 +341,7 @@ static int nfit_mem_init(struct acpi_nfit_desc *acpi_desc)
 	return 0;
 }
 
-static int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
+int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 {
 	struct device *dev = acpi_desc->dev;
 	const void *end;
@@ -380,6 +380,7 @@ static int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(nd_acpi_nfit_init);
 
 static int nd_acpi_add(struct acpi_device *adev)
 {

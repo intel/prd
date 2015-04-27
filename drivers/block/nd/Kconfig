@@ -37,4 +37,23 @@ config ND_ACPI
 	  addition to storage devices this also enables libnd craft
 	  ACPI._DSM messages for platform/dimm configuration.
 
+config NFIT_TEST
+	tristate "NFIT TEST: Manufactured NFIT for interface testing"
+	depends on DMA_CMA
+	depends on LIBND=m
+	depends on ND_ACPI
+	depends on m
+	help
+	  For development purposes register a manufactured
+	  NFIT table to verify the resulting device model topology.
+	  Note, this module arranges for ioremap_cache() to be
+	  overridden locally to allow simulation of system-memory as an
+	  io-memory-resource.
+
+	  Note, this test expects to be able to find at least 256MB of
+	  CMA space (CONFIG_CMA_SIZE_MBYTES, cma=) or it will fail to
+	  load.
+
+	  Say N unless you are doing development of the 'nd' subsystem.
+
 endif
