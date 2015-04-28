@@ -13,6 +13,7 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/ndctl.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include "nd-private.h"
@@ -59,6 +60,20 @@ struct nd_bus *walk_to_nd_bus(struct device *nd_dev)
 	return NULL;
 }
 
+static ssize_t commands_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int cmd, len = 0;
+	struct nd_bus *nd_bus = to_nd_bus(dev);
+	struct nd_bus_descriptor *nd_desc = nd_bus->nd_desc;
+
+	for_each_set_bit(cmd, &nd_desc->dsm_mask, BITS_PER_LONG)
+		len += sprintf(buf + len, "%s ", nd_bus_cmd_name(cmd));
+	len += sprintf(buf + len, "\n");
+	return len;
+}
+static DEVICE_ATTR_RO(commands);
+
 static const char *nd_bus_provider(struct nd_bus *nd_bus)
 {
 	struct nd_bus_descriptor *nd_desc = nd_bus->nd_desc;
@@ -82,6 +97,7 @@ static ssize_t provider_show(struct device *dev,
 static DEVICE_ATTR_RO(provider);
 
 static struct attribute *nd_bus_attributes[] = {
+	&dev_attr_commands.attr,
 	&dev_attr_provider.attr,
 	NULL,
 };

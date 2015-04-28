@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
+#include <linux/ndctl.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include "nfit_test.h"
@@ -142,7 +143,74 @@ static int nfit_test_ctl(struct nd_bus_descriptor *nd_desc,
 		struct nd_dimm *nd_dimm, unsigned int cmd, void *buf,
 		unsigned int buf_len)
 {
-	return -ENOTTY;
+	struct acpi_nfit_desc *acpi_desc = to_acpi_desc(nd_desc);
+	struct nfit_test *t = container_of(acpi_desc, typeof(*t), acpi_desc);
+	struct nfit_mem *nfit_mem = nd_dimm_provider_data(nd_dimm);
+	int i, rc;
+
+	if (!nfit_mem || !test_bit(cmd, &nfit_mem->dsm_mask))
+		return -ENXIO;
+
+	/* lookup label space for the given dimm */
+	for (i = 0; i < ARRAY_SIZE(handle); i++)
+		if (__to_nfit_memdev(nfit_mem)->nfit_handle == handle[i])
+			break;
+	if (i >= ARRAY_SIZE(handle))
+		return -ENXIO;
+
+	switch (cmd) {
+	case ND_CMD_GET_CONFIG_SIZE: {
+		struct nd_cmd_get_config_size *nd_cmd = buf;
+
+		if (buf_len < sizeof(*nd_cmd))
+			return -EINVAL;
+		nd_cmd->status = 0;
+		nd_cmd->config_size = LABEL_SIZE;
+		nd_cmd->max_xfer = SZ_4K;
+		rc = 0;
+		break;
+	}
+	case ND_CMD_GET_CONFIG_DATA: {
+		struct nd_cmd_get_config_data_hdr *nd_cmd = buf;
+		unsigned int len, offset = nd_cmd->in_offset;
+
+		if (buf_len < sizeof(*nd_cmd))
+			return -EINVAL;
+		if (offset >= LABEL_SIZE)
+			return -EINVAL;
+		if (nd_cmd->in_length + sizeof(*nd_cmd) > buf_len)
+			return -EINVAL;
+
+		nd_cmd->status = 0;
+		len = min(nd_cmd->in_length, LABEL_SIZE - offset);
+		memcpy(nd_cmd->out_buf, t->label[i] + offset, len);
+		rc = buf_len - sizeof(*nd_cmd) - len;
+		break;
+	}
+	case ND_CMD_SET_CONFIG_DATA: {
+		struct nd_cmd_set_config_hdr *nd_cmd = buf;
+		unsigned int len, offset = nd_cmd->in_offset;
+		u32 *status;
+
+		if (buf_len < sizeof(*nd_cmd))
+			return -EINVAL;
+		if (offset >= LABEL_SIZE)
+			return -EINVAL;
+		if (nd_cmd->in_length + sizeof(*nd_cmd) + 4 > buf_len)
+			return -EINVAL;
+
+		status = buf + nd_cmd->in_length + sizeof(*nd_cmd);
+		*status = 0;
+		len = min(nd_cmd->in_length, LABEL_SIZE - offset);
+		memcpy(t->label[i] + offset, nd_cmd->in_buf, len);
+		rc = buf_len - sizeof(*nd_cmd) - (len + 4);
+		break;
+	}
+	default:
+		return -ENOTTY;
+	}
+
+	return rc;
 }
 
 static DEFINE_SPINLOCK(nfit_test_lock);
@@ -280,6 +348,7 @@ static int nfit_test0_alloc(struct nfit_test *t)
 		t->label[i] = test_alloc(t, LABEL_SIZE, &t->label_dma[i]);
 		if (!t->label[i])
 			return -ENOMEM;
+		sprintf(t->label[i], "label%d", i);
 	}
 
 	for (i = 0; i < NUM_DCR; i++) {
@@ -322,6 +391,7 @@ static int nfit_test1_alloc(struct nfit_test *t)
 static void nfit_test0_setup(struct nfit_test *t)
 {
 	struct nd_bus_descriptor *nd_desc;
+	struct acpi_nfit_desc *acpi_desc;
 	struct acpi_nfit_memdev *memdev;
 	void *nfit_buf = t->nfit_buf;
 	size_t size = t->nfit_size;
@@ -763,7 +833,11 @@ static void nfit_test0_setup(struct nfit_test *t)
 
 	nfit->checksum = nfit_checksum(nfit_buf, size);
 
-	nd_desc = &t->acpi_desc.nd_desc;
+	acpi_desc = &t->acpi_desc;
+	set_bit(ND_CMD_GET_CONFIG_SIZE, &acpi_desc->dimm_dsm_force_en);
+	set_bit(ND_CMD_GET_CONFIG_DATA, &acpi_desc->dimm_dsm_force_en);
+	set_bit(ND_CMD_SET_CONFIG_DATA, &acpi_desc->dimm_dsm_force_en);
+	nd_desc = &acpi_desc->nd_desc;
 	nd_desc->ndctl = nfit_test_ctl;
 }
 

@@ -37,6 +37,18 @@ config ND_ACPI
 	  addition to storage devices this also enables libnd craft
 	  ACPI._DSM messages for platform/dimm configuration.
 
+config ND_ACPI_DEBUG
+	bool "ACPI: Extra nd_acpi debugging"
+	depends on ND_ACPI
+	depends on DYNAMIC_DEBUG
+	default n
+	help
+	  Enabling this option causes the nd_acpi driver to dump the
+	  input and output buffers of _DSM operations on the ACPI0012
+	  device and its children.  This can be very verbose, so leave
+	  it disabled unless you are debugging a hardware / firmware
+	  issue.
+
 config NFIT_TEST
 	tristate "NFIT TEST: Manufactured NFIT for interface testing"
 	depends on DMA_CMA

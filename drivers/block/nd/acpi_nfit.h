@@ -241,6 +241,8 @@ struct nfit_mem {
 	struct acpi_nfit_spa *spa_dcr;
 	struct acpi_nfit_spa *spa_bdw;
 	struct list_head list;
+	struct acpi_device *adev;
+	unsigned long dsm_mask;
 };
 
 struct acpi_nfit_desc {
@@ -253,6 +255,7 @@ struct acpi_nfit_desc {
 	struct list_head bdws;
 	struct nd_bus *nd_bus;
 	struct device *dev;
+	unsigned long dimm_dsm_force_en;
 };
 
 static inline struct acpi_nfit_memdev *__to_nfit_memdev(struct nfit_mem *nfit_mem)

@@ -18,6 +18,7 @@
 extern struct list_head nd_bus_list;
 extern struct mutex nd_bus_list_mutex;
 extern struct bus_type nd_bus_type;
+extern int nd_dimm_major;
 
 struct nd_bus {
 	struct nd_bus_descriptor *nd_desc;
@@ -29,10 +30,12 @@ struct nd_bus {
 struct nd_dimm {
 	unsigned long flags;
 	void *provider_data;
+	unsigned long *dsm_mask;
 	struct device dev;
 	int id;
 };
 
+bool is_nd_dimm(struct device *dev);
 struct nd_bus *walk_to_nd_bus(struct device *nd_dev);
 int __init nd_bus_init(void);
 void __exit nd_bus_exit(void);

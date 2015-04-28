@@ -14,13 +14,21 @@
  */
 #ifndef __LIBND_H__
 #define __LIBND_H__
+#include <linux/sizes.h>
 
 enum {
 	/* when a dimm supports both PMEM and BLK access a label is required */
 	NDD_ALIASING = 1 << 0,
+
+	/* need to set a limit somewhere, but yes, this is likely overkill */
+	ND_IOCTL_MAX_BUFLEN = SZ_4M,
+	ND_CMD_MAX_ELEM = 4,
+	ND_CMD_MAX_ENVELOPE = 16,
+	ND_CMD_ARS_QUERY_MAX = SZ_4K,
 };
 
 extern struct attribute_group nd_bus_attribute_group;
+extern struct attribute_group nd_dimm_attribute_group;
 
 struct nd_dimm;
 struct nd_bus_descriptor;
@@ -35,6 +43,13 @@ struct nd_bus_descriptor {
 	ndctl_fn ndctl;
 };
 
+struct nd_cmd_desc {
+	int in_num;
+	int out_num;
+	u32 in_sizes[ND_CMD_MAX_ELEM];
+	int out_sizes[ND_CMD_MAX_ELEM];
+};
+
 struct nd_bus;
 struct nd_bus *nd_bus_register(struct device *parent,
 		struct nd_bus_descriptor *nfit_desc);
@@ -45,5 +60,13 @@ struct nd_bus_descriptor *to_nd_desc(struct nd_bus *nd_bus);
 const char *nd_dimm_name(struct nd_dimm *nd_dimm);
 void *nd_dimm_provider_data(struct nd_dimm *nd_dimm);
 struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus, void *provider_data,
-		const struct attribute_group **groups, unsigned long flags);
+		const struct attribute_group **groups, unsigned long flags,
+		unsigned long *dsm_mask);
+const struct nd_cmd_desc const *nd_cmd_dimm_desc(int cmd);
+const struct nd_cmd_desc const *nd_cmd_bus_desc(int cmd);
+u32 nd_cmd_in_size(struct nd_dimm *nd_dimm, int cmd,
+		const struct nd_cmd_desc *desc, int idx, void *buf);
+u32 nd_cmd_out_size(struct nd_dimm *nd_dimm, int cmd,
+		const struct nd_cmd_desc *desc, int idx, const u32 *in_field,
+		const u32 *out_field);
 #endif /* __LIBND_H__ */
