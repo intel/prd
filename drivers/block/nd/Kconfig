@@ -95,6 +95,18 @@ config BLK_DEV_PMEM
 
 	  Say Y if you want to use a NVDIMM described by ACPI, E820, etc...
 
+config ND_BLK
+	tristate "BLK: Block data window (aperture) device support"
+	depends on LIBND
+	default ND_ACPI
+	help
+	  This driver performs I/O using a set of mmio windows on a
+	  dimm.  The set of apertures will all access the one DIMM.
+	  Multiple windows allow multiple threads to have a different
+	  portions of the dimm open at one time.
+
+	  Say Y if you want to use a NVDIMM with BLK-mode capability
+
 config ND_BTT_DEVS
 	bool
 

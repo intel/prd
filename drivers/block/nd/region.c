@@ -83,11 +83,15 @@ EXPORT_SYMBOL(nd_region_release_lane);
 
 static int nd_region_probe(struct device *dev)
 {
-	int err;
+	int err, rc;
 	struct nd_region_namespaces *num_ns;
 	struct nd_region *nd_region = to_nd_region(dev);
-	int rc = nd_region_register_namespaces(nd_region, &err);
 
+	rc = nd_blk_region_init(nd_region);
+	if (rc)
+		return rc;
+
+	rc = nd_region_register_namespaces(nd_region, &err);
 	num_ns = devm_kzalloc(dev, sizeof(*num_ns), GFP_KERNEL);
 	if (!num_ns)
 		return -ENOMEM;

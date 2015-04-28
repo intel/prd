@@ -113,6 +113,20 @@ struct nd_region {
 	struct nd_mapping mapping[0];
 };
 
+struct nd_blk_region {
+	int (*enable)(struct nd_bus *nd_bus, struct nd_blk_region *ndbr);
+	void (*disable)(struct nd_bus *nd_bus, struct nd_blk_region *ndbr);
+	int (*do_io)(struct nd_blk_region *ndbr, void *iobuf, unsigned int len,
+			int write, resource_size_t dpa);
+	void *blk_provider_data;
+	struct nd_region nd_region;
+};
+
+static inline struct nd_blk_region *to_blk_region(struct nd_region *nd_region)
+{
+	return container_of(nd_region, struct nd_blk_region, nd_region);
+}
+
 /*
  * Lookup next in the repeating sequence of 01, 10, and 11.
  */
@@ -242,4 +256,6 @@ void nd_bus_unlock(struct device *dev);
 bool is_nd_bus_locked(struct device *dev);
 int nd_label_reserve_dpa(struct nd_dimm_drvdata *ndd);
 void nd_dimm_free_dpa(struct nd_dimm_drvdata *ndd, struct resource *res);
+int nd_blk_region_init(struct nd_region *nd_region);
+resource_size_t nd_namespace_blk_validate(struct nd_namespace_blk *nsblk);
 #endif /* __ND_H__ */

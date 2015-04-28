@@ -80,6 +80,16 @@ struct nd_region_desc {
 };
 
 struct nd_bus;
+struct nd_blk_region;
+struct nd_blk_region_desc {
+	int (*enable)(struct nd_bus *nd_bus, struct nd_blk_region *ndbr);
+	void (*disable)(struct nd_bus *nd_bus, struct nd_blk_region *ndbr);
+	int (*do_io)(struct nd_blk_region *ndbr, void *iobuf, unsigned int len,
+			int write, resource_size_t dpa);
+	struct nd_region_desc ndr_desc;
+};
+
+struct nd_bus;
 struct nd_bus *__nd_bus_register(struct device *parent,
 		struct nd_bus_descriptor *nfit_desc, struct module *module);
 #define nd_bus_register(parent, desc) \
@@ -91,7 +101,6 @@ struct nd_region *to_nd_region(struct device *dev);
 struct nd_bus_descriptor *to_nd_desc(struct nd_bus *nd_bus);
 const char *nd_dimm_name(struct nd_dimm *nd_dimm);
 void *nd_dimm_provider_data(struct nd_dimm *nd_dimm);
-void *nd_region_provider_data(struct nd_region *nd_region);
 struct nd_dimm *nd_dimm_create(struct nd_bus *nd_bus, void *provider_data,
 		const struct attribute_group **groups, unsigned long flags,
 		unsigned long *dsm_mask);

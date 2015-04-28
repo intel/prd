@@ -22,7 +22,6 @@ extern struct list_head nd_bus_list;
 extern struct mutex nd_bus_list_mutex;
 extern int nd_dimm_major;
 
-struct block_device;
 struct nd_io_claim;
 struct nd_btt;
 struct nd_io;
@@ -50,8 +49,8 @@ struct nd_dimm {
 
 struct nd_io *ndio_lookup(struct nd_bus *nd_bus, const char *diskname);
 bool is_nd_dimm(struct device *dev);
-bool is_nd_blk(struct device *dev);
 bool is_nd_pmem(struct device *dev);
+bool is_nd_blk(struct device *dev);
 #if IS_ENABLED(CONFIG_ND_BTT_DEVS)
 bool is_nd_btt(struct device *dev);
 struct nd_btt *nd_btt_create(struct nd_bus *nd_bus);

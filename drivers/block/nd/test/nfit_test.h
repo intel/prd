@@ -21,6 +21,6 @@ struct nfit_test_resource {
 };
 
 typedef struct nfit_test_resource *(*nfit_test_lookup_fn)(resource_size_t);
-void nfit_test_setup(nfit_test_lookup_fn fn);
+void nfit_test_setup(nfit_test_lookup_fn lookup);
 void nfit_test_teardown(void);
 #endif

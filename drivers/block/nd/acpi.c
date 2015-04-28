@@ -12,12 +12,14 @@
  */
 #include <linux/list_sort.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/ndctl.h>
 #include <linux/list.h>
 #include <linux/acpi.h>
 #include <linux/sort.h>
 #include "acpi_nfit.h"
 #include "libnd.h"
+#include "nd.h"
 
 static bool warn_checksum;
 module_param(warn_checksum, bool, S_IRUGO|S_IWUSR);
@@ -84,7 +86,7 @@ static int nd_acpi_ctl(struct nd_bus_descriptor *nd_desc,
 
 		if (!adev)
 			return -ENOTTY;
-		dimm_name = dev_name(&adev->dev);
+		dimm_name = nd_dimm_name(nd_dimm);
 		cmd_name = nd_dimm_cmd_name(cmd);
 		dsm_mask = nfit_mem->dsm_mask;
 		desc = nd_cmd_dimm_desc(cmd);
@@ -301,10 +303,21 @@ static void *add_table(struct acpi_nfit_desc *acpi_desc, void *table, const void
 				bdw->dcr_index, bdw->num_bdw);
 		break;
 	}
-	/* TODO */
-	case NFIT_TABLE_IDT:
-		dev_dbg(dev, "%s: idt\n", __func__);
+	case NFIT_TABLE_IDT: {
+		struct nfit_idt *nfit_idt = devm_kzalloc(dev, sizeof(*nfit_idt),
+				GFP_KERNEL);
+		struct acpi_nfit_idt *idt = table;
+
+		if (!nfit_idt)
+			return err;
+		INIT_LIST_HEAD(&nfit_idt->list);
+		nfit_idt->idt = idt;
+		list_add_tail(&nfit_idt->list, &acpi_desc->idts);
+		dev_dbg(dev, "%s: idt index: %d num_lines: %d\n", __func__,
+				idt->idt_index, idt->num_lines);
 		break;
+	}
+	/* TODO */
 	case NFIT_TABLE_FLUSH:
 		dev_dbg(dev, "%s: flush\n", __func__);
 		break;
@@ -356,8 +369,11 @@ static int nfit_mem_add(struct acpi_nfit_desc *acpi_desc,
 		struct nfit_mem *nfit_mem, struct acpi_nfit_spa *spa)
 {
 	u16 dcr_index = __to_nfit_memdev(nfit_mem)->dcr_index;
+	struct nfit_memdev *nfit_memdev;
 	struct nfit_dcr *nfit_dcr;
 	struct nfit_bdw *nfit_bdw;
+	struct nfit_idt *nfit_idt;
+	u16 idt_index, spa_index;
 
 	list_for_each_entry(nfit_dcr, &acpi_desc->dcrs, list) {
 		if (nfit_dcr->dcr->dcr_index != dcr_index)
@@ -390,6 +406,26 @@ static int nfit_mem_add(struct acpi_nfit_desc *acpi_desc,
 		return 0;
 
 	nfit_mem_find_spa_bdw(acpi_desc, nfit_mem);
+
+	if (!nfit_mem->spa_bdw)
+		return 0;
+
+	spa_index = nfit_mem->spa_bdw->spa_index;
+	list_for_each_entry(nfit_memdev, &acpi_desc->memdevs, list) {
+		if (nfit_memdev->memdev->spa_index != spa_index ||
+				nfit_memdev->memdev->dcr_index != dcr_index)
+			continue;
+		nfit_mem->memdev_bdw = nfit_memdev->memdev;
+		idt_index = nfit_memdev->memdev->idt_index;
+		list_for_each_entry(nfit_idt, &acpi_desc->idts, list) {
+			if (nfit_idt->idt->idt_index != idt_index)
+				continue;
+			nfit_mem->idt_bdw = nfit_idt->idt;
+			break;
+		}
+		break;
+	}
+
 	return 0;
 }
 
@@ -433,9 +469,19 @@ static int nfit_mem_dcr_init(struct acpi_nfit_desc *acpi_desc,
 		}
 
 		if (type == NFIT_SPA_DCR) {
+			struct nfit_idt *nfit_idt;
+			u16 idt_index;
+
 			/* multiple dimms may share a SPA when interleaved */
 			nfit_mem->spa_dcr = spa;
 			nfit_mem->memdev_dcr = nfit_memdev->memdev;
+			idt_index = nfit_memdev->memdev->idt_index;
+			list_for_each_entry(nfit_idt, &acpi_desc->idts, list) {
+				if (nfit_idt->idt->idt_index != idt_index)
+					continue;
+				nfit_mem->idt_dcr = nfit_idt->idt;
+				break;
+			}
 		} else {
 			/*
 			 * A single dimm may belong to multiple SPA-PM
@@ -756,7 +802,7 @@ static ssize_t spa_index_show(struct device *dev,
                 struct device_attribute *attr, char *buf)
 {
         struct nd_region *nd_region = to_nd_region(dev);
-        struct nfit_spa *nfit_spa = nd_region_provider_data(nd_region);
+        struct nfit_spa *nfit_spa = nd_region->provider_data;
 
         return sprintf(buf, "%d\n", nfit_spa->spa->spa_index);
 }
@@ -864,13 +910,343 @@ static int nd_acpi_init_interleave_set(struct acpi_nfit_desc *acpi_desc,
 	return 0;
 }
 
+static u64 to_interleave_offset(u64 offset, struct nfit_blk_mmio *mmio)
+{
+	struct acpi_nfit_idt *idt = mmio->idt;
+	u32 sub_line_offset, line_index, line_offset;
+	u64 line_no, table_skip_count, table_offset;
+
+	line_no = div_u64_rem(offset, mmio->line_size, &sub_line_offset);
+	table_skip_count = div_u64_rem(line_no, mmio->num_lines, &line_index);
+	line_offset = idt->line_offset[line_index]
+		* mmio->line_size;
+	table_offset = table_skip_count * mmio->table_size;
+
+	return mmio->base_offset + line_offset + table_offset + sub_line_offset;
+}
+
+static u64 read_blk_stat(struct nfit_blk *nfit_blk, unsigned int bw)
+{
+	struct nfit_blk_mmio *mmio = &nfit_blk->mmio[DCR];
+	u64 offset = nfit_blk->stat_offset + mmio->size * bw;
+
+	if (mmio->num_lines)
+		offset = to_interleave_offset(offset, mmio);
+
+	return readq(mmio->base + offset);
+}
+
+static void write_blk_ctl(struct nfit_blk *nfit_blk, unsigned int bw,
+		resource_size_t dpa, unsigned int len, unsigned int write)
+{
+	u64 cmd, offset;
+	struct nfit_blk_mmio *mmio = &nfit_blk->mmio[DCR];
+
+	enum {
+		BCW_OFFSET_MASK = (1ULL << 48)-1,
+		BCW_LEN_SHIFT = 48,
+		BCW_LEN_MASK = (1ULL << 8) - 1,
+		BCW_CMD_SHIFT = 56,
+	};
+
+	cmd = (dpa >> L1_CACHE_SHIFT) & BCW_OFFSET_MASK;
+	len = len >> L1_CACHE_SHIFT;
+	cmd |= ((u64) len & BCW_LEN_MASK) << BCW_LEN_SHIFT;
+	cmd |= ((u64) write) << BCW_CMD_SHIFT;
+
+	offset = nfit_blk->cmd_offset + mmio->size * bw;
+	if (mmio->num_lines)
+		offset = to_interleave_offset(offset, mmio);
+
+	writeq(cmd, mmio->base + offset);
+	/* FIXME: conditionally perform read-back if mandated by firmware */
+}
+
+/* len is <= PAGE_SIZE by this point, so it can be done in a single BW I/O */
+static int nd_acpi_blk_region_do_io(struct nd_blk_region *ndbr, void *iobuf,
+		unsigned int len, int write, resource_size_t dpa)
+{
+	struct nfit_blk *nfit_blk = ndbr->blk_provider_data;
+	struct nfit_blk_mmio *mmio = &nfit_blk->mmio[BDW];
+	struct nd_region *nd_region = &ndbr->nd_region;
+	unsigned int bw, copied = 0;
+	u64 base_offset;
+	int rc;
+
+	bw = nd_region_acquire_lane(nd_region);
+	base_offset = nfit_blk->bdw_offset + dpa % L1_CACHE_BYTES + bw * mmio->size;
+	/* TODO: non-temporal access, flush hints, cache management etc... */
+	write_blk_ctl(nfit_blk, bw, dpa, len, write);
+	while (len) {
+		unsigned int c;
+		u64 offset;
+
+		if (mmio->num_lines) {
+			u32 line_offset;
+
+			offset = to_interleave_offset(base_offset + copied,
+					mmio);
+			div_u64_rem(offset, mmio->line_size, &line_offset);
+			c = min(len, mmio->line_size - line_offset);
+		} else {
+			offset = base_offset + nfit_blk->bdw_offset;
+			c = len;
+		}
+
+		if (write)
+			memcpy(mmio->base + offset, iobuf + copied, c);
+		else
+			memcpy(iobuf + copied, mmio->base + offset, c);
+
+		len -= c;
+		copied += c;
+	}
+	rc = read_blk_stat(nfit_blk, bw) ? -EIO : 0;
+	nd_region_release_lane(nd_region, bw);
+
+	return rc;
+}
+
+static void nfit_spa_mapping_release(struct kref *kref)
+{
+	struct nfit_spa_mapping *spa_map = to_spa_map(kref);
+	struct acpi_nfit_spa *spa = spa_map->spa;
+	struct acpi_nfit_desc *acpi_desc = spa_map->acpi_desc;
+
+	WARN_ON(!mutex_is_locked(&acpi_desc->spa_map_mutex));
+	dev_dbg(acpi_desc->dev, "%s: SPA%d\n", __func__, spa->spa_index);
+	iounmap(spa_map->iomem);
+	release_mem_region(spa->spa_base, spa->spa_length);
+	list_del(&spa_map->list);
+	kfree(spa_map);
+}
+
+static struct nfit_spa_mapping *find_spa_mapping(struct acpi_nfit_desc *acpi_desc,
+		struct acpi_nfit_spa *spa)
+{
+	struct nfit_spa_mapping *spa_map;
+
+	WARN_ON(!mutex_is_locked(&acpi_desc->spa_map_mutex));
+	list_for_each_entry(spa_map, &acpi_desc->spa_maps, list)
+		if (spa_map->spa == spa)
+			return spa_map;
+
+	return NULL;
+}
+
+static void nfit_spa_unmap(struct acpi_nfit_desc *acpi_desc,
+		struct acpi_nfit_spa *spa)
+{
+	struct nfit_spa_mapping *spa_map;
+
+	mutex_lock(&acpi_desc->spa_map_mutex);
+	spa_map = find_spa_mapping(acpi_desc, spa);
+
+	if (spa_map)
+		kref_put(&spa_map->kref, nfit_spa_mapping_release);
+	mutex_unlock(&acpi_desc->spa_map_mutex);
+}
+
+static void *__nfit_spa_map(struct acpi_nfit_desc *acpi_desc,
+		struct acpi_nfit_spa *spa)
+{
+	resource_size_t start = spa->spa_base;
+	resource_size_t n = spa->spa_length;
+	struct nfit_spa_mapping *spa_map;
+	struct resource *res;
+
+	WARN_ON(!mutex_is_locked(&acpi_desc->spa_map_mutex));
+
+	spa_map = find_spa_mapping(acpi_desc, spa);
+	if (spa_map) {
+		kref_get(&spa_map->kref);
+		return spa_map->iomem;
+	}
+
+	spa_map = kzalloc(sizeof(*spa_map), GFP_KERNEL);
+	if (!spa_map)
+		return NULL;
+
+	INIT_LIST_HEAD(&spa_map->list);
+	spa_map->spa = spa;
+	kref_init(&spa_map->kref);
+	spa_map->acpi_desc = acpi_desc;
+
+	res = request_mem_region(start, n, dev_name(acpi_desc->dev));
+	if (!res)
+		goto err_mem;
+
+	/* TODO: cacheability based on the spa type */
+	spa_map->iomem = ioremap_nocache(start, n);
+	if (!spa_map->iomem)
+		goto err_map;
+
+	list_add_tail(&spa_map->list, &acpi_desc->spa_maps);
+	return spa_map->iomem;
+
+ err_map:
+	release_mem_region(start, n);
+ err_mem:
+	kfree(spa_map);
+	return NULL;
+}
+
+/**
+ * nfit_spa_map - interleave-aware managed-mappings of acpi_nfit_spa ranges
+ * @nd_bus: NFIT-bus that provided the spa table entry
+ * @nfit_spa: spa table to map
+ *
+ * In the case where block-data-window apertures and
+ * dimm-control-regions are interleaved they will end up sharing a
+ * single request_mem_region() + ioremap() for the address range.  In
+ * the style of devm nfit_spa_map() mappings are automatically dropped
+ * when all region devices referencing the same mapping are disabled /
+ * unbound.
+ */
+static void *nfit_spa_map(struct acpi_nfit_desc *acpi_desc,
+		struct acpi_nfit_spa *spa)
+{
+	struct nfit_spa_mapping *spa_map;
+
+	mutex_lock(&acpi_desc->spa_map_mutex);
+	spa_map = __nfit_spa_map(acpi_desc, spa);
+	mutex_unlock(&acpi_desc->spa_map_mutex);
+
+	return spa_map;
+}
+
+static int nfit_blk_init_interleave(struct nfit_blk_mmio *mmio,
+		struct acpi_nfit_idt *idt, u16 interleave_ways)
+{
+	if (idt) {
+		mmio->num_lines = idt->num_lines;
+		mmio->line_size = idt->line_size;
+		if (interleave_ways == 0)
+			return -ENXIO;
+		mmio->table_size = mmio->num_lines * interleave_ways
+			* mmio->line_size;
+	}
+
+	return 0;
+}
+
+int nd_acpi_blk_region_enable(struct nd_bus *nd_bus, struct nd_blk_region *ndbr)
+{
+	struct nd_bus_descriptor *nd_desc = to_nd_desc(nd_bus);
+	struct acpi_nfit_desc *acpi_desc = to_acpi_desc(nd_desc);
+	struct nd_region *nd_region = &ndbr->nd_region;
+	struct nd_mapping *nd_mapping;
+	struct nfit_blk_mmio *mmio;
+	struct nfit_blk *nfit_blk;
+	struct nfit_mem *nfit_mem;
+	struct nd_dimm *nd_dimm;
+	int rc;
+
+	nd_mapping = &nd_region->mapping[0];
+	nd_dimm = nd_mapping->nd_dimm;
+	nfit_mem = nd_dimm_provider_data(nd_dimm);
+	if (!nfit_mem || !nfit_mem->dcr || !nfit_mem->bdw) {
+		dev_dbg(&nd_region->dev, "%s: missing%s%s%s\n", __func__,
+				nfit_mem ? "" : " nfit_mem",
+				nfit_mem->dcr ? "" : " dcr",
+				nfit_mem->bdw ? "" : " bdw");
+		return -ENXIO;
+	}
+
+	nfit_blk = devm_kzalloc(&nd_region->dev, sizeof(*nfit_blk), GFP_KERNEL);
+	if (!nfit_blk)
+		return -ENOMEM;
+	ndbr->blk_provider_data = nfit_blk;
+
+	/* map block aperture memory */
+	nfit_blk->bdw_offset = nfit_mem->bdw->bdw_offset;
+	mmio = &nfit_blk->mmio[BDW];
+	mmio->base = nfit_spa_map(acpi_desc, nfit_mem->spa_bdw);
+	if (!mmio->base) {
+		dev_dbg(&nd_region->dev, "%s: %s failed to map bdw\n", __func__,
+				nd_dimm_name(nd_dimm));
+		return -ENOMEM;
+	}
+	mmio->size = nfit_mem->bdw->bdw_size;
+	mmio->base_offset = nfit_mem->memdev_bdw->region_spa_offset;
+	mmio->idt = nfit_mem->idt_bdw;
+	mmio->spa = nfit_mem->spa_bdw;
+	rc = nfit_blk_init_interleave(mmio, nfit_mem->idt_bdw,
+			nfit_mem->memdev_bdw->interleave_ways);
+	if (rc) {
+		dev_dbg(&nd_region->dev, "%s: %s failed to init bdw interleave\n",
+				__func__, nd_dimm_name(nd_dimm));
+		return rc;
+	}
+
+	/* map block control memory */
+	nfit_blk->cmd_offset = nfit_mem->dcr->cmd_offset;
+	nfit_blk->stat_offset = nfit_mem->dcr->status_offset;
+	mmio = &nfit_blk->mmio[DCR];
+	mmio->base = nfit_spa_map(acpi_desc, nfit_mem->spa_dcr);
+	if (!mmio->base) {
+		dev_dbg(&nd_region->dev, "%s: %s failed to map dcr\n", __func__,
+				nd_dimm_name(nd_dimm));
+		return -ENOMEM;
+	}
+	mmio->size = nfit_mem->dcr->bcw_size;
+	mmio->base_offset = nfit_mem->memdev_dcr->region_spa_offset;
+	mmio->idt = nfit_mem->idt_dcr;
+	mmio->spa = nfit_mem->spa_dcr;
+	rc = nfit_blk_init_interleave(mmio, nfit_mem->idt_dcr,
+			nfit_mem->memdev_dcr->interleave_ways);
+	if (rc) {
+		dev_dbg(&nd_region->dev, "%s: %s failed to init dcr interleave\n",
+				__func__, nd_dimm_name(nd_dimm));
+		return rc;
+	}
+
+	if (mmio->line_size == 0)
+		return 0;
+
+	if ((u32) nfit_blk->cmd_offset % mmio->line_size + 8 > mmio->line_size) {
+		dev_dbg(&nd_region->dev,
+				"cmd_offset crosses interleave boundary\n");
+		return -ENXIO;
+	} else if ((u32) nfit_blk->stat_offset % mmio->line_size + 8 > mmio->line_size) {
+		dev_dbg(&nd_region->dev,
+				"stat_offset crosses interleave boundary\n");
+		return -ENXIO;
+	}
+
+	return 0;
+}
+
+static void nd_acpi_blk_region_disable(struct nd_bus *nd_bus,
+		struct nd_blk_region *ndbr)
+{
+	struct nd_bus_descriptor *nd_desc = to_nd_desc(nd_bus);
+	struct acpi_nfit_desc *acpi_desc = to_acpi_desc(nd_desc);
+	struct nfit_blk *nfit_blk = ndbr->blk_provider_data;
+	int i;
+
+	if (!nfit_blk)
+		return; /* never enabled */
+
+	/* auto-free BLK spa mappings */
+	for (i = 0; i < 2; i++) {
+		struct nfit_blk_mmio *mmio = &nfit_blk->mmio[i];
+
+		if (mmio->base)
+			nfit_spa_unmap(acpi_desc, mmio->spa);
+	}
+	ndbr->blk_provider_data = NULL;
+	/* devm will free nfit_blk */
+}
+
 static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
 		struct nfit_spa *nfit_spa)
 {
 	static struct nd_mapping nd_mappings[ND_MAX_MAPPINGS];
 	struct acpi_nfit_spa *spa = nfit_spa->spa;
+	struct nd_blk_region_desc ndbr_desc;
+	struct nd_region_desc *ndr_desc;
 	struct nfit_memdev *nfit_memdev;
-	struct nd_region_desc ndr_desc;
 	int spa_type, count = 0, rc;
 	struct resource res;
 	u16 spa_index;
@@ -885,12 +1261,13 @@ static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
 
 	memset(&res, 0, sizeof(res));
 	memset(&nd_mappings, 0, sizeof(nd_mappings));
-	memset(&ndr_desc, 0, sizeof(ndr_desc));
+	memset(&ndbr_desc, 0, sizeof(ndr_desc));
 	res.start = spa->spa_base;
 	res.end = res.start + spa->spa_length - 1;
-	ndr_desc.res = &res;
-	ndr_desc.provider_data = nfit_spa;
-	ndr_desc.attr_groups = nd_acpi_region_attribute_groups;
+	ndr_desc = &ndbr_desc.ndr_desc;
+	ndr_desc->res = &res;
+	ndr_desc->provider_data = nfit_spa;
+	ndr_desc->attr_groups = nd_acpi_region_attribute_groups;
 	list_for_each_entry(nfit_memdev, &acpi_desc->memdevs, list) {
 		struct acpi_nfit_memdev *memdev = nfit_memdev->memdev;
 		struct nd_mapping *nd_mapping;
@@ -926,26 +1303,29 @@ static int nd_acpi_register_region(struct acpi_nfit_desc *acpi_desc,
 			} else {
 				nd_mapping->size = nfit_mem->bdw->blk_capacity;
 				nd_mapping->start = nfit_mem->bdw->blk_offset;
-				ndr_desc.num_lanes = nfit_mem->bdw->num_bdw;
+				ndr_desc->num_lanes = nfit_mem->bdw->num_bdw;
 			}
 
-			ndr_desc.nd_mapping = nd_mapping;
-			ndr_desc.num_mappings = blk_valid;
-			if (!nd_blk_region_create(acpi_desc->nd_bus, &ndr_desc))
+			ndr_desc->nd_mapping = nd_mapping;
+			ndr_desc->num_mappings = blk_valid;
+			ndbr_desc.enable = nd_acpi_blk_region_enable;
+			ndbr_desc.disable = nd_acpi_blk_region_disable;
+			ndbr_desc.do_io = acpi_desc->blk_do_io;
+			if (!nd_blk_region_create(acpi_desc->nd_bus, ndr_desc))
 				return -ENOMEM;
 		}
 	}
 
-	ndr_desc.nd_mapping = nd_mappings;
-	ndr_desc.num_mappings = count;
-	rc = nd_acpi_init_interleave_set(acpi_desc, &ndr_desc, spa);
+	ndr_desc->nd_mapping = nd_mappings;
+	ndr_desc->num_mappings = count;
+	rc = nd_acpi_init_interleave_set(acpi_desc, ndr_desc, spa);
 	if (rc)
 		return rc;
 	if (spa_type == NFIT_SPA_PM) {
-		if (!nd_pmem_region_create(acpi_desc->nd_bus, &ndr_desc))
+		if (!nd_pmem_region_create(acpi_desc->nd_bus, ndr_desc))
 			return -ENOMEM;
 	} else if (spa_type == NFIT_SPA_VOLATILE) {
-		if (!nd_volatile_region_create(acpi_desc->nd_bus, &ndr_desc))
+		if (!nd_volatile_region_create(acpi_desc->nd_bus, ndr_desc))
 			return -ENOMEM;
 	}
 	return 0;
@@ -972,11 +1352,14 @@ int nd_acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, acpi_size sz)
 	acpi_size i;
 	int rc;
 
+	INIT_LIST_HEAD(&acpi_desc->spa_maps);
 	INIT_LIST_HEAD(&acpi_desc->spas);
 	INIT_LIST_HEAD(&acpi_desc->dcrs);
 	INIT_LIST_HEAD(&acpi_desc->bdws);
+	INIT_LIST_HEAD(&acpi_desc->idts);
 	INIT_LIST_HEAD(&acpi_desc->memdevs);
 	INIT_LIST_HEAD(&acpi_desc->dimms);
+	mutex_init(&acpi_desc->spa_map_mutex);
 
 	data = (u8 *) acpi_desc->nfit;
 	for (i = 0, sum = 0; i < sz; i++)
@@ -1035,6 +1418,7 @@ static int nd_acpi_add(struct acpi_device *adev)
 	dev_set_drvdata(dev, acpi_desc);
 	acpi_desc->dev = dev;
 	acpi_desc->nfit = (struct acpi_nfit *) tbl;
+	acpi_desc->blk_do_io = nd_acpi_blk_region_do_io;
 	nd_desc = &acpi_desc->nd_desc;
 	nd_desc->provider_name = "ACPI.NFIT";
 	nd_desc->ndctl = nd_acpi_ctl;

@@ -151,6 +151,53 @@ static resource_size_t nd_namespace_blk_size(struct nd_namespace_blk *nsblk)
 	return size;
 }
 
+resource_size_t nd_namespace_blk_validate(struct nd_namespace_blk *nsblk)
+{
+	struct nd_region *nd_region = to_nd_region(nsblk->dev.parent);
+	struct nd_mapping *nd_mapping = &nd_region->mapping[0];
+	struct nd_dimm_drvdata *ndd = to_ndd(nd_mapping);
+	struct nd_label_id label_id;
+	struct resource *res;
+	int count, i;
+
+	if (!nsblk->uuid || !nsblk->lbasize)
+		return 0;
+
+	count = 0;
+	nd_label_gen_id(&label_id, nsblk->uuid, NSLABEL_FLAG_LOCAL);
+	for_each_dpa_resource(ndd, res) {
+		if (strcmp(res->name, label_id.id) != 0)
+			continue;
+		/*
+		 * Resources with unacknoweldged adjustments indicate a
+		 * failure to update labels
+		 */
+		if (res->flags & DPA_RESOURCE_ADJUSTED)
+			return 0;
+		count++;
+	}
+
+	/* These values match after a successful label update */
+	if (count != nsblk->num_resources)
+		return 0;
+
+	for (i = 0; i < nsblk->num_resources; i++) {
+		struct resource *found = NULL;
+
+		for_each_dpa_resource(ndd, res)
+			if (res == nsblk->res[i]) {
+				found = res;
+				break;
+			}
+		/* stale resource */
+		if (!found)
+			return 0;
+	}
+
+	return nd_namespace_blk_size(nsblk);
+}
+EXPORT_SYMBOL(nd_namespace_blk_validate);
+
 static int nd_namespace_label_update(struct nd_region *nd_region, struct device *dev)
 {
 	dev_WARN_ONCE(dev, dev->driver,

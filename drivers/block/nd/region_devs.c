@@ -11,6 +11,7 @@
  * General Public License for more details.
  */
 #include <linux/scatterlist.h>
+#include <linux/highmem.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/sort.h>
@@ -33,7 +34,10 @@ static void nd_region_release(struct device *dev)
 		put_device(&nd_dimm->dev);
 	}
 	ida_simple_remove(&region_ida, nd_region->id);
-	kfree(nd_region);
+	if (is_nd_blk(dev))
+		kfree(to_blk_region(nd_region));
+	else
+		kfree(nd_region);
 }
 
 static struct device_type nd_blk_device_type = {
@@ -339,27 +343,33 @@ u64 nd_region_interleave_set_cookie(struct nd_region *nd_region)
 
 /*
  * Upon successful probe/remove, take/release a reference on the
- * associated interleave set (if present)
+ * associated dimms in the interleave set, on successful probe of a BLK
+ * namespace check if we need a new seed, and on remove or failed probe
+ * of a BLK region notify the provider to disable the region.
  */
 static void nd_region_notify_driver_action(struct nd_bus *nd_bus,
 		struct device *dev, int rc, bool probe)
 {
-	if (rc)
-		return;
-
 	if (is_nd_pmem(dev) || is_nd_blk(dev)) {
 		struct nd_region *nd_region = to_nd_region(dev);
+		struct nd_blk_region *nd_blk_region;
 		int i;
 
 		for (i = 0; i < nd_region->ndr_mappings; i++) {
 			struct nd_mapping *nd_mapping = &nd_region->mapping[i];
 			struct nd_dimm *nd_dimm = nd_mapping->nd_dimm;
 
-			if (probe)
+			if (probe && rc == 0)
 				atomic_inc(&nd_dimm->busy);
-			else
+			else if (!probe)
 				atomic_dec(&nd_dimm->busy);
 		}
+
+		if (is_nd_pmem(dev) || (probe && rc == 0))
+			return;
+
+		nd_blk_region = to_blk_region(nd_region);
+		nd_blk_region->disable(nd_bus, nd_blk_region);
 	} else if (dev->parent && is_nd_blk(dev->parent) && probe && rc == 0) {
 		struct nd_region *nd_region = to_nd_region(dev->parent);
 
@@ -503,11 +513,21 @@ struct attribute_group nd_mapping_attribute_group = {
 };
 EXPORT_SYMBOL_GPL(nd_mapping_attribute_group);
 
-void *nd_region_provider_data(struct nd_region *nd_region)
+int nd_blk_region_init(struct nd_region *nd_region)
 {
-	return nd_region->provider_data;
+	struct nd_blk_region *ndbr = to_blk_region(nd_region);
+	struct nd_bus *nd_bus = walk_to_nd_bus(&nd_region->dev);
+
+	if (!is_nd_blk(&nd_region->dev))
+		return 0;
+
+	if (nd_region->ndr_mappings < 1) {
+		dev_err(&nd_region->dev, "invalid BLK region\n");
+		return -ENXIO;
+	}
+
+	return ndbr->enable(nd_bus, ndbr);
 }
-EXPORT_SYMBOL_GPL(nd_region_provider_data);
 
 static noinline struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 		struct nd_region_desc *ndr_desc, struct device_type *dev_type)
@@ -529,9 +549,28 @@ static noinline struct nd_region *nd_region_create(struct nd_bus *nd_bus,
 		}
 	}
 
-	nd_region = kzalloc(sizeof(struct nd_region)
-			+ sizeof(struct nd_mapping) * ndr_desc->num_mappings,
-			GFP_KERNEL);
+	if (dev_type == &nd_blk_device_type) {
+		struct nd_blk_region_desc *ndbr_desc;
+		struct nd_blk_region *ndbr;
+
+		ndbr_desc = container_of(ndr_desc, typeof(*ndbr_desc), ndr_desc);
+		ndbr = kzalloc(sizeof(*ndbr) + sizeof(struct nd_mapping)
+				* ndr_desc->num_mappings,
+				GFP_KERNEL);
+		if (ndbr) {
+			nd_region = &ndbr->nd_region;
+			ndbr->enable = ndbr_desc->enable;
+			ndbr->disable = ndbr_desc->disable;
+			ndbr->do_io = ndbr_desc->do_io;
+		} else
+			nd_region = NULL;
+	} else {
+		nd_region = kzalloc(sizeof(struct nd_region)
+				+ sizeof(struct nd_mapping)
+				* ndr_desc->num_mappings,
+				GFP_KERNEL);
+	}
+
 	if (!nd_region)
 		return NULL;
 	nd_region->id = ida_simple_get(&region_ida, 0, 0, GFP_KERNEL);
