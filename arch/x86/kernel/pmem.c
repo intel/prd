@@ -13,7 +13,7 @@ static __init void register_pmem_device(struct resource *res)
 	struct platform_device *pdev;
 	int error;
 
-	pdev = platform_device_alloc("pmem", PLATFORM_DEVID_AUTO);
+	pdev = platform_device_alloc("e820_pmem", PLATFORM_DEVID_AUTO);
 	if (!pdev)
 		return;
 

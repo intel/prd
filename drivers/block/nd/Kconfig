@@ -68,4 +68,31 @@ config NFIT_TEST
 
 	  Say N unless you are doing development of the 'nd' subsystem.
 
+config ND_E820
+	tristate "E820: Support the E820-type-12 PMEM convention"
+	depends on X86_PMEM_LEGACY
+	default m if X86_PMEM_LEGACY
+	select LIBND
+	help
+	  Prior to ACPI 6 some platforms advertised peristent memory
+	  via type-12 e820 memory ranges.  Create a libnd bus and
+	  attach an instance of the pmem driver to these ranges.
+
+config BLK_DEV_PMEM
+	tristate "PMEM: Persistent memory block device support"
+	depends on LIBND
+	default LIBND
+	help
+	  Memory ranges for PMEM are described by either an NFIT
+	  (NVDIMM Firmware Interface Table, see CONFIG_NFIT_ACPI), a
+	  non-standard OEM-specific E820 memory type (type-12, see
+	  CONFIG_X86_PMEM_LEGACY), or it is manually specified by the
+	  'memmap=nn[KMG]!ss[KMG]' kernel command line (see
+	  Documentation/kernel-parameters.txt).  This driver converts
+	  these persistent memory ranges into block devices that are
+	  capable of DAX (direct-access) file system mappings.  See
+	  Documentation/blockdev/nd.txt for more details.
+
+	  Say Y if you want to use a NVDIMM described by NFIT
+
 endif
