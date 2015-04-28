@@ -228,7 +228,7 @@ static bool preamble_current(struct nd_dimm_drvdata *ndd,
 	return true;
 }
 
-static char *nd_label_gen_id(struct nd_label_id *label_id, u8 *uuid, u32 flags)
+char *nd_label_gen_id(struct nd_label_id *label_id, u8 *uuid, u32 flags)
 {
 	if (!label_id || !uuid)
 		return NULL;
@@ -288,4 +288,56 @@ int nd_label_reserve_dpa(struct nd_dimm_drvdata *ndd)
 	}
 
 	return 0;
+}
+
+int nd_label_active_count(struct nd_dimm_drvdata *ndd)
+{
+	struct nd_namespace_index __iomem *nsindex;
+	unsigned long *free;
+	u32 nslot, slot;
+	int count = 0;
+
+	if (!preamble_current(ndd, &nsindex, &free, &nslot))
+		return 0;
+
+	for_each_clear_bit_le(slot, free, nslot) {
+		struct nd_namespace_label __iomem *nd_label;
+
+		nd_label = nd_label_base(ndd) + slot;
+
+		if (!slot_valid(nd_label, slot)) {
+			dev_dbg(ndd->dev,
+				"%s: slot%d invalid slot: %d dpa: %lx rawsize: %lx\n",
+					__func__, slot, readl(&nd_label->slot),
+					(unsigned long) readq(&nd_label->dpa),
+					(unsigned long) readq(&nd_label->rawsize));
+			continue;
+		}
+		count++;
+	}
+	return count;
+}
+
+struct nd_namespace_label __iomem *nd_label_active(
+		struct nd_dimm_drvdata *ndd, int n)
+{
+	struct nd_namespace_index __iomem *nsindex;
+	unsigned long *free;
+	u32 nslot, slot;
+
+	if (!preamble_current(ndd, &nsindex, &free, &nslot))
+		return NULL;
+
+	for_each_clear_bit_le(slot, free, nslot) {
+		struct nd_namespace_label __iomem *nd_label;
+
+		nd_label = nd_label_base(ndd) + slot;
+		if (slot != readl(&nd_label->slot))
+			continue;
+
+		if (n-- == 0)
+			return nd_label_base(ndd) + slot;
+	}
+
+	return NULL;
 }

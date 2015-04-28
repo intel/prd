@@ -86,7 +86,7 @@ static int nd_dimm_remove(struct device *dev)
 	nd_bus_lock(dev);
 	dev_set_drvdata(dev, NULL);
 	for_each_dpa_resource_safe(ndd, res, _r)
-		__release_region(&ndd->dpa, res->start, resource_size(res));
+		nd_dimm_free_dpa(ndd, res);
 	nd_bus_unlock(dev);
 	free_data(ndd);
 

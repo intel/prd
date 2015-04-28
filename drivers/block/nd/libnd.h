@@ -40,8 +40,10 @@ typedef int (*ndctl_fn)(struct nd_bus_descriptor *nd_desc,
 		struct nd_dimm *nd_dimm, unsigned int cmd, void *buf,
 		unsigned int buf_len);
 
+struct nd_namespace_label;
 struct nd_mapping {
 	struct nd_dimm *nd_dimm;
+	struct nd_namespace_label **labels;
 	u64 start;
 	u64 size;
 };

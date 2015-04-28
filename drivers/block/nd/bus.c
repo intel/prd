@@ -364,8 +364,10 @@ u32 nd_cmd_out_size(struct nd_dimm *nd_dimm, int cmd,
 }
 EXPORT_SYMBOL_GPL(nd_cmd_out_size);
 
-static void wait_nd_bus_probe_idle(struct nd_bus *nd_bus)
+void wait_nd_bus_probe_idle(struct device *dev)
 {
+	struct nd_bus *nd_bus = walk_to_nd_bus(dev);
+
 	do {
 		if (nd_bus->probe_active == 0)
 			break;
@@ -384,7 +386,7 @@ static int nd_cmd_clear_to_send(struct nd_dimm *nd_dimm, unsigned int cmd)
 		return 0;
 
 	nd_bus = walk_to_nd_bus(&nd_dimm->dev);
-	wait_nd_bus_probe_idle(nd_bus);
+	wait_nd_bus_probe_idle(&nd_bus->dev);
 
 	if (atomic_read(&nd_dimm->busy))
 		return -EBUSY;
