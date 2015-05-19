@@ -43,6 +43,9 @@ https://www.kernel.org/doc/Documentation/kernel-parameters.txt
 CONFIG_BLK_DEV_RAM_DAX=y
 CONFIG_FS_DAX=y
 CONFIG_X86_PMEM_LEGACY=y
+CONFIG_ND_DEVICES=y
+CONFIG_LIBND=m
+CONFIG_ND_E820=y
 CONFIG_BLK_DEV_PMEM=m
 </pre>
 
