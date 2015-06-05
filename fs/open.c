@@ -58,7 +58,8 @@ int do_truncate(struct dentry *dentry, loff_t length, unsigned int time_attrs,
 	if (ret)
 		newattrs.ia_valid |= ret | ATTR_FORCE;
 
-	mutex_lock(&dentry->d_inode->i_mutex);
+	if (mutex_lock_killable(&dentry->d_inode->i_mutex))
+		return -EINTR;
 	/* Note any delegations or leases have already been broken: */
 	ret = notify_change(dentry, &newattrs, NULL);
 	mutex_unlock(&dentry->d_inode->i_mutex);
@@ -510,7 +511,8 @@ static int chmod_common(struct path *path, umode_t mode)
 	if (error)
 		return error;
 retry_deleg:
-	mutex_lock(&inode->i_mutex);
+	if (mutex_lock_killable(&inode->i_mutex))
+		return -EINTR;
 	error = security_path_chmod(path, mode);
 	if (error)
 		goto out_unlock;
@@ -593,7 +595,8 @@ retry_deleg:
 	if (!S_ISDIR(inode->i_mode))
 		newattrs.ia_valid |=
 			ATTR_KILL_SUID | ATTR_KILL_SGID | ATTR_KILL_PRIV;
-	mutex_lock(&inode->i_mutex);
+	if (mutex_lock_killable(&inode->i_mutex))
+		return -EINTR;
 	error = security_path_chown(path, uid, gid);
 	if (!error)
 		error = notify_change(path->dentry, &newattrs, &delegated_inode);
