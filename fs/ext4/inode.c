@@ -493,7 +493,11 @@ int ext4_map_blocks(handle_t *handle, struct inode *inode,
 				retval = map->m_len;
 			map->m_len = retval;
 		} else if (ext4_es_is_delayed(&es) || ext4_es_is_hole(&es)) {
-			retval = 0;
+			map->m_flags |= EXT4_MAP_UPTODATE;
+			retval = es.es_len - (map->m_lblk - es.es_lblk);
+			if (retval > map->m_len)
+				retval = map->m_len;
+			map->m_len = retval;
 		} else {
 			BUG_ON(1);
 		}
