@@ -14,7 +14,7 @@ DSM Interface Example: http://pmem.io/documents/NVDIMM_DSM_Interface_Example.pdf
 
 Driver Writer’s Guide: http://pmem.io/documents/NVDIMM_Driver_Writers_Guide.pdf
 
-ND: https://git.kernel.org/cgit/linux/kernel/git/djbw/nvdimm.git/log/?h=nd
+ND: https://git.kernel.org/cgit/linux/kernel/git/djbw/nvdimm.git
 
 NDCTL: https://github.com/pmem/ndctl.git
 
