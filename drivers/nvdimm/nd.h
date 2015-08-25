@@ -166,7 +166,7 @@ int nd_btt_probe(struct nd_namespace_common *ndns, void *drvdata);
 bool is_nd_btt(struct device *dev);
 struct device *nd_btt_create(struct nd_region *nd_region);
 #else
-static inline nd_btt_probe(struct nd_namespace_common *ndns, void *drvdata)
+static inline int nd_btt_probe(struct nd_namespace_common *ndns, void *drvdata)
 {
 	return -ENODEV;
 }
@@ -217,4 +217,5 @@ static inline bool nd_iostat_start(struct bio *bio, unsigned long *start)
 }
 void nd_iostat_end(struct bio *bio, unsigned long start);
 resource_size_t nd_namespace_blk_validate(struct nd_namespace_blk *nsblk);
+const u8 *nd_dev_to_uuid(struct device *dev);
 #endif /* __ND_H__ */
